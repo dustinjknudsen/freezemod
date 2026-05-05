@@ -1,6 +1,7 @@
 // Copyright (c) ZeniMax Media Inc.
 // Licensed under the GNU General Public License 2.0.
 #include "g_local.h"
+#include "g_freeze.h"
 #include "monsters/m_player.h"
 #include "bots/bot_includes.h"
 
@@ -709,11 +710,11 @@ static void ClientObituary(gentity_t *self, gentity_t *inflictor, gentity_t *att
 						gi.LocBroadcast_Print(PRINT_CENTER, "{} put an end to {}'s\nrampage!", attacker->client->resp.netname, self->client->resp.netname);
 					}
 				} else if (Teams() || level.match_state != matchst_t::MATCH_IN_PROGRESS) {
-					if (attacker->client->sess.pc.show_fragmessages)
-						gi.LocClient_Print(attacker, PRINT_CENTER, "You {} {}", GT(GT_FREEZE) ? "froze" : "fragged", self->client->resp.netname);
+					if (!GT(GT_FREEZE) && attacker->client->sess.pc.show_fragmessages)
+						gi.LocClient_Print(attacker, PRINT_CENTER, "You fragged {}", self->client->resp.netname);
 				} else {
-					if (attacker->client->sess.pc.show_fragmessages)
-						gi.LocClient_Print(attacker, PRINT_CENTER, "You {} {}\n{} place with {}", GT(GT_FREEZE) ? "froze" : "fragged",
+					if (!GT(GT_FREEZE) && attacker->client->sess.pc.show_fragmessages)
+						gi.LocClient_Print(attacker, PRINT_CENTER, "You fragged {}\n{} place with {}",
 							self->client->resp.netname, G_PlaceString(attacker->client->resp.rank + 1), attacker->client->resp.score);
 				}
 			}
@@ -1181,9 +1182,10 @@ DIE(player_die) (gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int
 		self->takedamage = false;
 	} else { // normal death
 		if (!self->deadflag) {
-			if (GT(GT_FREEZE)) {
-				self->s.frame = FRAME_crstnd01 - 1;
-				self->client->anim_end = self->s.frame;
+			if (GT(GT_FREEZE) && freezeCheck(self, mod)) {
+				freezeAnim(self);
+				ClientSetEliminated(self);
+				return;
 			} else {
 				// start a death animation
 				self->client->anim_priority = ANIM_DEATH;
@@ -4541,6 +4543,11 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 
 			if (client->follow_target) {
 				FreeFollower(ent);
+				if (GT(GT_FREEZE) && ent->client->frozen && ent->client->frozen_body) {
+					ent->s.origin = ent->client->frozen_body->s.origin;
+					ent->movetype = MOVETYPE_NONE;
+					gi.linkentity(ent);
+				}
 			} else
 				GetFollowTarget(ent);
 		} else if (!ent->client->weapon_thunk) {
@@ -4894,6 +4901,14 @@ void ClientBeginServerFrame(gentity_t *ent) {
 	else
 		client->weapon_thunk = false;
 
+	// Frozen players have deadflag=true; intercept here before the respawn block
+	// so they get their per-frame logic without accidentally triggering a respawn.
+	// Alive freeze tag players are handled at the end of this function instead.
+	if (GT(GT_FREEZE) && client->frozen) {
+		freezeMain(ent);
+		return;
+	}
+
 	if (ent->deadflag) {
 		//muff mode: add minimum delay in dm
 		if (deathmatch->integer && client->respawn_min_time && level.time > client->respawn_min_time && level.time <= client->respawn_time) {
@@ -4926,6 +4941,9 @@ void ClientBeginServerFrame(gentity_t *ent) {
 		PlayerTrail_Add(ent);
 
 	client->latched_buttons = BUTTON_NONE;
+
+	if (GT(GT_FREEZE))
+		freezeMain(ent);
 }
 /*
 ==============

@@ -3,6 +3,7 @@
 // g_combat.c
 
 #include "g_local.h"
+#include "g_freeze.h"
 
 /*
 ============
@@ -608,14 +609,12 @@ void T_Damage(gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, const 
 		}
 
 /*freeze*/
-#if 0
-		if (GT(GT_FREEZE) && playerDamage(targ, attacker, damage)) {
+		if (GT(GT_FREEZE) && playerDamage(targ, attacker, damage, mod)) {
 			take = 0;
 			save = damage;
 			SpawnDamage(te_sparks, point, normal, save);
 			return;
 		}
-#endif
 /*freeze*/
 
 		// instagib railgun splash never inflicts damage

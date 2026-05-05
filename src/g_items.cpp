@@ -3,6 +3,7 @@
 #include "g_local.h"
 #include "bots/bot_includes.h"
 #include "monsters/m_player.h"	//doppelganger
+#include "g_freeze.h"
 
 bool Pickup_Weapon(gentity_t *ent, gentity_t *other);
 void Use_Weapon(gentity_t *ent, gitem_t *inv);
@@ -33,13 +34,13 @@ void	   Use_Quad(gentity_t *ent, gitem_t *item);
 static gtime_t quad_drop_timeout_hack;
 void	   Use_Haste(gentity_t *ent, gitem_t *item);
 static gtime_t haste_drop_timeout_hack;
-void	   Use_Double(gentity_t *ent, gitem_t *item);
+static void Use_Double(gentity_t *ent, gitem_t *item);
 static gtime_t double_drop_timeout_hack;
-void	   Use_Invisibility(gentity_t *ent, gitem_t *item);
+static void Use_Invisibility(gentity_t *ent, gitem_t *item);
 static gtime_t invisibility_drop_timeout_hack;
-void	   Use_Protection(gentity_t *ent, gitem_t *item);
+static void Use_Protection(gentity_t *ent, gitem_t *item);
 static gtime_t protection_drop_timeout_hack;
-void	   Use_Regeneration(gentity_t *ent, gitem_t *item);
+static void Use_Regeneration(gentity_t *ent, gitem_t *item);
 static gtime_t regeneration_drop_timeout_hack;
 
 static void UsedMessage(gentity_t *ent, gitem_t *item) {
@@ -2729,6 +2730,8 @@ TOUCH(Touch_Item) (gentity_t *ent, gentity_t *other, const trace_t &tr, bool oth
 		return;
 	if (other->health < 1)
 		return; // dead people can't pickup
+	if (GT(GT_FREEZE) && other->client->frozen)
+		return;
 	if (!ent->item)
 		return;
 	if (!ent->item->pickup)

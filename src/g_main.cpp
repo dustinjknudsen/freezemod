@@ -3,6 +3,7 @@
 
 #include "g_local.h"
 #include "g_debug_log.h"
+#include "g_freeze.h"
 #include "bots/bot_includes.h"
 #include "monsters/m_player.h"	// match starts
 
@@ -1672,6 +1673,9 @@ void Match_Start() {
 	Entities_Reset(true, true, true);
 	UnReadyAll();
 	ValidateCaptains();
+
+	if (GT(GT_FREEZE))
+		freezeSpawn();
 
 	// g_match_lock: lock teams via level.locked so unlockteam can override per-team
 	if (g_match_lock->integer && Teams()) {
@@ -3445,14 +3449,14 @@ void QueueIntermission(const char *msg, bool boo, bool reset) {
 int GT_ScoreLimit() {
 	if (GTF(GTF_ROUNDS))
 		return roundlimit->integer;
-	if (GT(GT_CTF))
+	if (GT(GT_CTF) || GT(GT_FREEZE))
 		return capturelimit->integer;
 	return fraglimit->integer;
 }
 
 const char *GT_ScoreLimitString() {
-	if (GT(GT_CTF))
-		return "capture";
+	if (GT(GT_CTF) || GT(GT_FREEZE))
+		return "round";
 	if (GTF(GTF_ROUNDS))
 		return "round";
 	return "frag";
@@ -4099,6 +4103,9 @@ static void CheckDMEndFrame() {
 	CheckDMRoundState();
 	CheckDMCountdown();
 	CheckDMMatchEndWarning();
+
+	if (GT(GT_FREEZE))
+		endCheck();
 
 	// see if it is time to end a deathmatch
 	CheckDMExitRules();

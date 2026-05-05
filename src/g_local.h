@@ -3786,10 +3786,12 @@ struct gclient_t {
 
 	bool		eliminated;
 /*freeze*/
-	gentity_t		*viewed;
-	float		thaw_time;
-	float		frozen_time;
-	float		moan_time;
+	gentity_t	*viewed;
+	gentity_t	*frozen_body;   // ghost entity used as spectator chase target
+	gtime_t		thaw_time;
+	gtime_t		frozen_time;
+	gtime_t		moan_time;
+	bool		frozen;
 /*freeze*/
 
 	bool		ready_to_exit;

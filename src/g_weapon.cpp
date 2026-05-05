@@ -562,7 +562,7 @@ constexpr spawnflags_t SPAWNFLAG_GRENADE_HELD = 2_spawnflag;
 fire_grenade
 =================
 */
-static THINK(Grenade_Explode) (gentity_t *ent) -> void {
+THINK(Grenade_Explode) (gentity_t *ent) -> void {
 	vec3_t origin;
 	mod_t  mod;
 

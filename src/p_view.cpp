@@ -2,6 +2,7 @@
 // Licensed under the GNU General Public License 2.0.
 
 #include "g_local.h"
+#include "g_freeze.h"
 #include "monsters/m_player.h"
 #include "bots/bot_includes.h"
 
@@ -1353,6 +1354,14 @@ void ClientEndServerFrame(gentity_t *ent) {
 		return;
 	}
 
+	/*freeze*/
+	// Frozen players skip world effects and damage feedback entirely.
+	// P_WorldEffects applies lava/drowning damage with no health gate; P_DamageFeedback
+	// would render blood from the lethal hit. Neither should run while frozen.
+	if (GT(GT_FREEZE) && ent->client->frozen)
+		return;
+	/*freeze*/
+
 	// auto doc tech
 	Tech_ApplyAutoDoc(ent);
 
@@ -1444,6 +1453,13 @@ void ClientEndServerFrame(gentity_t *ent) {
 	G_SetClientEvent(ent);
 
 	G_SetClientEffects(e);
+
+	/*freeze*/
+	// G_SetClientEffects unconditionally clears s.effects before its early-return for
+	// dead/eliminated players, so apply the ice shell after it runs.
+	if (GT(GT_FREEZE) && e->client->frozen)
+		playerShell(e);
+	/*freeze*/
 
 	G_SetClientSound(e);
 
