@@ -146,7 +146,9 @@ void P_DamageFeedback(gentity_t *player) {
 	}
 
 	// play an appropriate pain sound
-	if ((level.time > player->pain_debounce_time) && !(player->flags & FL_GODMODE)) {
+	/*freeze*/
+	if ((level.time > player->pain_debounce_time) && !(player->flags & FL_GODMODE) && !client->frozen && !player->deadflag) {
+	/*freeze*/
 		player->pain_debounce_time = level.time + 700_ms;
 
 		constexpr const char *pain_sounds[] = {
@@ -569,11 +571,6 @@ static void G_CalcBlend(gentity_t *ent) {
 		if (G_PowerUpExpiringRelative(remaining))
 			G_AddBlend(0.4f, 1, 0.4f, 0.04f, ent->client->ps.screen_blend);
 	}
-/*freeze*/
-	else if (GT(GT_FREEZE) && ent->client->eliminated && !ent->client->follow_target && (!ent->client->resp.thawer)) {	// || level.framenum &8))
-		G_AddBlend(0.6f, 0.6f, 0.6f, 0.4f, ent->client->ps.screen_blend);
-	}
-/*freeze*/
 
 	if (ent->client->nuke_time > level.time) {
 		float brightness = (ent->client->nuke_time - level.time).seconds() / 2.0f;
@@ -740,7 +737,8 @@ static void P_WorldEffects() {
 	//
 	// check for sizzle damage
 	//
-	if (waterlevel && (current_player->watertype & (CONTENTS_LAVA | CONTENTS_SLIME)) && current_player->slime_debounce_time <= level.time) {
+	/*freeze*/ // Frozen players don't take sizzle damage — melt rate is handled by playerUnfreeze.
+	if (waterlevel && (current_player->watertype & (CONTENTS_LAVA | CONTENTS_SLIME)) && current_player->slime_debounce_time <= level.time && !current_player->client->frozen) { /*freeze*/
 		if (current_player->watertype & CONTENTS_LAVA) {
 			if (current_player->health > 0 && current_player->pain_debounce_time <= level.time) {
 				if (brandom())
@@ -787,6 +785,12 @@ static void G_SetClientEffects(gentity_t *ent) {
 	ent->s.renderfx |= RF_IR_VISIBLE;
 	ent->s.alpha = 1.0;
 
+	if (ent->client->owned_sphere) {
+		gentity_t *sphere = ent->client->owned_sphere;
+		if (sphere < g_entities || sphere >= g_entities + globals.num_entities || !sphere->inuse)
+			ent->client->owned_sphere = nullptr;
+	}
+
 	if (ent->health <= 0 || ent->client->eliminated || level.intermission_time)
 		return;
 
@@ -818,17 +822,19 @@ static void G_SetClientEffects(gentity_t *ent) {
 		ent->s.renderfx |= RF_SHELL_RED | RF_SHELL_GREEN;
 	}
 
+	// Rapid blink (~2.5hz, 200ms on/off) so team skin color shows between flashes.
+	bool pu_shell_visible = (level.time.milliseconds() / 200) % 2 == 0;
 	if (ent->client->pu_time_quad > level.time)
-		if (G_PowerUpExpiring(ent->client->pu_time_quad))
+		if (pu_shell_visible)
 			ent->s.effects |= EF_QUAD;
 	if (ent->client->pu_time_protection > level.time)
-		if (G_PowerUpExpiring(ent->client->pu_time_protection))
+		if (pu_shell_visible)
 			ent->s.effects |= EF_PENT;
 	if (ent->client->pu_time_haste > level.time)
-		if (G_PowerUpExpiring(ent->client->pu_time_haste))
+		if (pu_shell_visible)
 			ent->s.effects |= EF_DUALFIRE;
 	if (ent->client->pu_time_double > level.time)
-		if (G_PowerUpExpiring(ent->client->pu_time_double))
+		if (pu_shell_visible)
 			ent->s.effects |= EF_DOUBLE;
 	if ((ent->client->owned_sphere) && (ent->client->owned_sphere->spawnflags == SF_SPHERE_DEFENDER))
 		ent->s.effects |= EF_HALF_DAMAGE;
@@ -841,6 +847,9 @@ static void G_SetClientEffects(gentity_t *ent) {
 			float x = (ent->client->invisibility_fade_time - level.time).seconds() / INVISIBILITY_TIME.seconds();
 			ent->s.alpha = std::clamp(x, 0.05f, 0.2f);
 		}
+	} else if (ent->client->pers.spawn_ghost_time > level.time ||
+	           ent->client->pers.thaw_protect_time > level.time) {
+		ent->s.alpha = 0.5f;
 	}
 }
 
@@ -1281,9 +1290,11 @@ void ClientEndServerFrame(gentity_t *ent) {
 
 	if (deathmatch->integer) {
 		int limit = GT_ScoreLimit();
-		if (!ent->client->ps.stats[STAT_SCORELIMIT] || limit != strtoul(gi.get_configstring(CONFIG_STORY_SCORELIMIT), nullptr, 10)) {
+		auto lim_str = G_Fmt("Score Limit: {}", limit);
+		const char *new_str = limit ? lim_str.data() : "";
+		if (!ent->client->ps.stats[STAT_SCORELIMIT] || strcmp(gi.get_configstring(CONFIG_STORY_SCORELIMIT), new_str)) {
 			ent->client->ps.stats[STAT_SCORELIMIT] = CONFIG_STORY_SCORELIMIT;
-			gi.configstring(CONFIG_STORY_SCORELIMIT, limit ? G_Fmt("{}", limit).data() : "");
+			gi.configstring(CONFIG_STORY_SCORELIMIT, new_str);
 		}
 	}
 
@@ -1321,7 +1332,11 @@ void ClientEndServerFrame(gentity_t *ent) {
 	// If it wasn't updated here, the view position would lag a frame
 	// behind the body position when pushed -- "sinking into plats"
 	//
-	current_client->ps.pmove.origin = ent->s.origin;
+	// Don't overwrite the camera position for frozen chasecam players — UpdateChaseCam
+	// sets ps.pmove.origin to the followed player's position while keeping ent->s.origin
+	// at the frozen body for the team indicator.
+	if (!(GT(GT_FREEZE) && ent->client->frozen && ent->client->follow_target))
+		current_client->ps.pmove.origin = ent->s.origin;
 	current_client->ps.pmove.velocity = ent->velocity;
 
 	//
@@ -1358,8 +1373,23 @@ void ClientEndServerFrame(gentity_t *ent) {
 	// Frozen players skip world effects and damage feedback entirely.
 	// P_WorldEffects applies lava/drowning damage with no health gate; P_DamageFeedback
 	// would render blood from the lethal hit. Neither should run while frozen.
-	if (GT(GT_FREEZE) && ent->client->frozen)
+	if (GT(GT_FREEZE) && ent->client->frozen) {
+		G_SetSpectatorStats(ent);
+		G_CheckChaseStats(ent);
+		if (ent->client->showscores && ent->client->menutime <= level.time) {
+			DeathmatchScoreboardMessage(e, e->enemy);
+			gi.unicast(ent, false);
+			ent->client->menutime = level.time + 3_sec;
+		}
+		ent->client->ps.screen_blend = {};
+		if (!ent->client->follow_target) {
+			if (ent->client->sess.team == TEAM_RED)
+				G_AddBlend(0.6f, 0.0f, 0.0f, 0.1f, ent->client->ps.screen_blend);
+			else
+				G_AddBlend(1.0f, 1.0f, 1.0f, 0.1f, ent->client->ps.screen_blend);
+		}
 		return;
+	}
 	/*freeze*/
 
 	// auto doc tech
@@ -1453,13 +1483,6 @@ void ClientEndServerFrame(gentity_t *ent) {
 	G_SetClientEvent(ent);
 
 	G_SetClientEffects(e);
-
-	/*freeze*/
-	// G_SetClientEffects unconditionally clears s.effects before its early-return for
-	// dead/eliminated players, so apply the ice shell after it runs.
-	if (GT(GT_FREEZE) && e->client->frozen)
-		playerShell(e);
-	/*freeze*/
 
 	G_SetClientSound(e);
 

@@ -12,6 +12,16 @@ struct freeze_team_t {
 extern freeze_team_t freeze[2]; // [0]=Red, [1]=Blue
 extern int           gib_queue;
 
+/*freeze*/
+struct thaw_record_t {
+    vec3_t origin;
+    bool   in_place;
+    bool   round_end_break;
+};
+// Indexed by (ent - g_entities - 1). Separate from gclient_t to avoid sizeof change.
+extern thaw_record_t thaw_records[MAX_CLIENTS_KEX];
+/*freeze*/
+
 // initialization
 void freezeSpawn();
 

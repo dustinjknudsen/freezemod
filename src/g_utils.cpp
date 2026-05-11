@@ -548,6 +548,9 @@ bool KillBox(gentity_t *ent, bool from_spawning, mod_id_t mod, bool bsp_clipping
 			continue;
 		else if (hit->client && !(mask & CONTENTS_PLAYER))
 			continue;
+		else if (hit->client && (hit->client->pers.spawn_ghost_time > level.time ||
+		         hit->client->pers.thaw_protect_time > level.time))
+			continue;
 
 		if ((ent->solid == SOLID_BSP || (ent->svflags & SVF_HULL)) && bsp_clipping) {
 			trace_t clip = gi.clip(ent, hit->s.origin, hit->mins, hit->maxs, hit->s.origin, G_GetClipMask(hit));

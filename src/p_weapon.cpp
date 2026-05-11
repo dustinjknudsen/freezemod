@@ -1139,6 +1139,7 @@ static inline weapon_ready_state_t Weapon_HandleReady(gentity_t *ent, int FRAME_
 
 			if ((!ent->client->pers.weapon->ammo) ||
 				(ent->client->pers.inventory[ent->client->pers.weapon->ammo] >= ent->client->pers.weapon->quantity)) {
+				ent->client->pers.spawn_ghost_time = 0_ms; // firing ends spawn protection
 				ent->client->weaponstate = WEAPON_FIRING;
 				ent->client->last_firing_time = level.time + COOP_DAMAGE_FIRING_TIME;
 				return READY_FIRING;
@@ -1634,7 +1635,7 @@ static void Weapon_Grapple_Reset(gentity_t *self) {
 	if (!self || !self->owner->client || !self->owner->client->grapple_ent)
 		return;
 
-	gi.sound(self->owner, CHAN_WEAPON, gi.soundindex("weapons/grapple/grreset.wav"), self->owner->client->silencer_shots ? 0.2f : 1.0f, ATTN_NORM, 0);
+	gi.sound(self->owner, CHAN_AUX, gi.soundindex("medic/medatck5.wav"), 1.0f, ATTN_NORM, 0);
 
 	gclient_t *cl;
 	cl = self->owner->client;
@@ -1675,7 +1676,12 @@ static TOUCH(Weapon_Grapple_Touch) (gentity_t *self, gentity_t *other, const tra
 		return;
 	}
 
-	self->owner->client->grapple_state = GRAPPLE_STATE_PULL; // we're on hook
+	self->owner->client->grapple_state = GRAPPLE_STATE_PULL;
+	{
+		vec3_t start, dir;
+		P_ProjectSource(self->owner, self->owner->client->v_angle, { 7, 2, -9 }, start, dir);
+		self->angle = (self->s.origin - start).length();
+	}
 	self->enemy = other;
 
 	self->solid = SOLID_NOT;
@@ -1695,15 +1701,12 @@ static TOUCH(Weapon_Grapple_Touch) (gentity_t *self, gentity_t *other, const tra
 
 // draw beam between grapple and self
 static void Weapon_Grapple_DrawCable(gentity_t *self) {
-	if (self->owner->client->grapple_state == GRAPPLE_STATE_HANG)
-		return;
-
 	vec3_t start, dir;
 	P_ProjectSource(self->owner, self->owner->client->v_angle, { 7, 2, -9 }, start, dir);
 
 	gi.WriteByte(svc_temp_entity);
-	gi.WriteByte(TE_GRAPPLE_CABLE_2);
-	gi.WriteEntity(self->owner);
+	gi.WriteByte(TE_MEDIC_CABLE_ATTACK);
+	gi.WriteEntity(self);
 	gi.WritePosition(start);
 	gi.WritePosition(self->s.origin);
 	gi.multicast(self->s.origin, MULTICAST_PVS, false);
@@ -1711,8 +1714,7 @@ static void Weapon_Grapple_DrawCable(gentity_t *self) {
 
 // pull the player toward the grapple
 void Weapon_Grapple_Pull(gentity_t *self) {
-	vec3_t hookdir, v;
-	float  vlen;
+	vec3_t v;
 
 	if (self->owner->client->pers.weapon && self->owner->client->pers.weapon->id == IT_WEAPON_GRAPPLE &&
 		!(self->owner->client->newweapon || ((self->owner->client->latched_buttons | self->owner->client->buttons) & BUTTON_HOLSTER)) &&
@@ -1747,27 +1749,38 @@ void Weapon_Grapple_Pull(gentity_t *self) {
 	Weapon_Grapple_DrawCable(self);
 
 	if (self->owner->client->grapple_state > GRAPPLE_STATE_FLY) {
-		// pull player toward grapple
-		vec3_t forward, up;
+		// reel in rope toward anchor each frame
+		self->angle = max(0.f, self->angle - g_grapple_pull_speed->value * gi.frame_time_s);
 
-		AngleVectors(self->owner->client->v_angle, forward, nullptr, up);
-		v = self->owner->s.origin;
-		v[2] += self->owner->viewheight;
-		hookdir = self->s.origin - v;
+		vec3_t start, dir;
+		P_ProjectSource(self->owner, self->owner->client->v_angle, { 7, 2, -9 }, start, dir);
 
-		vlen = hookdir.length();
+		vec3_t chainvec = self->s.origin - start;
+		float chainlen = chainvec.length();
+		float force = 0;
 
-		if (self->owner->client->grapple_state == GRAPPLE_STATE_PULL &&
-			vlen < 64) {
-			self->owner->client->grapple_state = GRAPPLE_STATE_HANG;
-			self->s.sound = gi.soundindex("weapons/grapple/grhang.wav");
+		if (chainlen > self->angle) {
+			vec3_t velpart = chainvec * (self->owner->velocity.dot(chainvec) / chainvec.dot(chainvec));
+			force = (chainlen - self->angle) * 5;
+			if (self->owner->velocity.dot(chainvec) < 0) {
+				// moving away from anchor: cancel outward velocity component
+				if (chainlen > self->angle + 25)
+					self->owner->velocity -= velpart;
+			} else {
+				// moving toward anchor: reduce corrective force by existing momentum
+				float vp_len = velpart.length();
+				if (vp_len < force)
+					force -= vp_len;
+				else
+					force = 0;
+			}
 		}
 
-		hookdir.normalize();
-		hookdir = hookdir * g_grapple_pull_speed->value;
-		self->owner->velocity = hookdir;
-		self->owner->flags |= FL_NO_KNOCKBACK;
-		G_AddGravity(self->owner);
+		chainvec.normalize();
+		self->owner->velocity += chainvec * force;
+		// cancel gravity accumulated this frame to prevent pendulum swing buildup while on rope
+		self->owner->velocity -= self->owner->gravityVector * (self->owner->gravity * level.gravity * gi.frame_time_s);
+		G_CheckVelocity(self->owner);
 	}
 }
 
@@ -1829,7 +1842,7 @@ static void Weapon_Grapple_DoFire(gentity_t *ent, const vec3_t &g_offset, int da
 		volume = 0.2f;
 
 	if (Weapon_Grapple_FireHook(ent, start, dir, damage, g_grapple_fly_speed->value, effect))
-		gi.sound(ent, CHAN_WEAPON, gi.soundindex("weapons/grapple/grfire.wav"), volume, ATTN_NORM, 0);
+		gi.sound(ent, CHAN_AUX, gi.soundindex("medic/medatck2.wav"), volume, ATTN_NORM, 0);
 
 	PlayerNoise(ent, start, PNOISE_WEAPON);
 }
@@ -1905,7 +1918,7 @@ static void Weapon_Hook_DoFire(gentity_t *ent, const vec3_t &g_offset, int damag
 	P_ProjectSource(ent, ent->client->v_angle, vec3_t{ 24, 0, 0 } + g_offset, start, dir);
 
 	if (Weapon_Grapple_FireHook(ent, start, dir, damage, g_grapple_fly_speed->value, effect))
-		gi.sound(ent, CHAN_WEAPON, gi.soundindex("weapons/grapple/grfire.wav"), ent->client->silencer_shots ? 0.2f : 1.0f, ATTN_NORM, 0);
+		gi.sound(ent, CHAN_AUX, gi.soundindex("medic/medatck2.wav"), ent->client->silencer_shots ? 0.2f : 1.0f, ATTN_NORM, 0);
 
 	PlayerNoise(ent, start, PNOISE_WEAPON);
 }

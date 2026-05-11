@@ -4,8 +4,11 @@
 #include "g_freeze.h"
 #include "monsters/m_player.h"
 
-freeze_team_t freeze[2];
-int           gib_queue;
+freeze_team_t  freeze[2];
+int            gib_queue;
+/*freeze*/
+thaw_record_t  thaw_records[MAX_CLIENTS_KEX];
+/*freeze*/
 
 // Maps muffmode team_t (TEAM_RED=3, TEAM_BLUE=4) to freeze[] index (0, 1).
 static inline int freeze_idx(team_t t) {
@@ -23,6 +26,7 @@ static cvar_t *ft_start_armor;
 
 // Bitmask for "thawer proximity hint shown" in client_respawn_t::help.
 static constexpr int thaw_help = bit_v<0>;
+
 
 // ============================================================
 // Initialization
@@ -100,24 +104,21 @@ bool playerDamage(gentity_t *targ, gentity_t *attacker, int damage, mod_t mod) {
 bool freezeCheck(gentity_t *ent, mod_t mod) {
 	if (ent->deadflag)
 		return false;
+	if (IsCombatDisabled())
+		return false;
 	if (mod.friendly_fire)
 		return false;
 	switch (mod.id) {
-	case MOD_FALLING:
-	case MOD_SLIME:
-	case MOD_LAVA:
-		if (frandom() < 0.08f)
-			break;
 	case MOD_SUICIDE:
-	case MOD_CRUSH:
-	case MOD_WATER:
 	case MOD_EXIT:
-	case MOD_TRIGGER_HURT:
 	case MOD_BFG_LASER:
 	case MOD_BFG_EFFECT:
 	case MOD_TELEFRAG:
+	case MOD_TELEFRAG_SPAWN:
 	case MOD_NUKE:
 		return false;
+	default:
+		break;
 	}
 	return true;
 }
@@ -178,17 +179,21 @@ void freezeAnim(gentity_t *ent) {
 	else
 		gi.sound(ent, CHAN_BODY, gi.soundindex("boss3/d_hit.wav"), 1, ATTN_NORM, 0);
 
+	Weapon_Grapple_DoReset(ent->client);
 	ent->client->frozen = true;
 	ent->client->frozen_time = level.time + gtime_t::from_sec(g_frozen_time->value);
 	ent->client->resp.thawer = nullptr;
 	ent->client->thaw_time = HOLD_FOREVER;
 	ent->deadflag = true;
+	ent->solid = SOLID_NOT;
+	ent->svflags |= SVF_DEADMONSTER;
 	gi.linkentity(ent);
-	// Ghost tracks the original body position for thaw proximity when entity is in chasecam.
-	// SVF_NOCLIENT: invisible — position anchor only, visual ghost deferred to Phase 5.
+	P_AssignClientSkinnum(ent); // poi_icon = 1 (X indicator) for frozen teammates
+	gi.configstring(CONFIG_CHASE_PLAYER_NAME + (ent - g_entities - 1),
+		G_Fmt("{} (frozen)", ent->client->pers.netname).data());
+	// Ghost is solid (SOLID_BBOX, NOCLIENT) — acts as a team-neutral physical obstacle.
+	// The engine skips same-team SVF_PLAYER collision; the ghost has no team encoding.
 	CreateFrozenBodyGhost(ent);
-	if (ent->client->frozen_body)
-		ent->client->frozen_body->svflags |= SVF_NOCLIENT;
 }
 
 // ============================================================
@@ -235,6 +240,20 @@ void playerView(gentity_t *ent) {
 }
 
 void playerThaw(gentity_t *ent) {
+	const vec3_t &body_origin = ent->client->frozen_body
+		? ent->client->frozen_body->s.origin
+		: ent->s.origin;
+
+	// Sticky thawer: if current thawer is still alive and in range, keep them.
+	gentity_t *cur = ent->client->resp.thawer;
+	if (cur && cur->inuse && cur->health > 0 && !cur->client->frozen) {
+		vec3_t eorg;
+		for (int j = 0; j < 3; j++)
+			eorg[j] = body_origin[j] - (cur->s.origin[j] + (cur->mins[j] + cur->maxs[j]) * 0.5f);
+		if (eorg.length() <= MELEE_DISTANCE + 32)
+			return;
+	}
+
 	for (uint32_t i = 0; i < (uint32_t)game.maxclients; i++) {
 		gentity_t *other = g_entities + 1 + i;
 		if (!other->inuse) continue;
@@ -243,15 +262,13 @@ void playerThaw(gentity_t *ent) {
 		if (other->health <= 0) continue;
 		if (other->client->frozen) continue;
 		if (other->client->sess.team != ent->client->sess.team) continue;
+		// Respawn grace: players within 2 seconds of spawning can't steal a thaw.
+		// if (level.time < other->client->pers.last_spawn_time + 2_sec) continue;
 
-		// Use ghost origin: entity may be teleported to chasecam target position.
-		const vec3_t &body_origin = ent->client->frozen_body
-			? ent->client->frozen_body->s.origin
-			: ent->s.origin;
 		vec3_t eorg;
 		for (int j = 0; j < 3; j++)
 			eorg[j] = body_origin[j] - (other->s.origin[j] + (other->mins[j] + other->maxs[j]) * 0.5f);
-		if (eorg.length() > MELEE_DISTANCE + 5)
+		if (eorg.length() > MELEE_DISTANCE + 32)
 			continue;
 
 		if (!(other->client->resp.help & thaw_help)) {
@@ -273,6 +290,15 @@ void playerThaw(gentity_t *ent) {
 }
 
 void playerBreak(gentity_t *ent, int force) {
+	/*freeze*/
+	// In chasecam modes, ent->s.origin is at the camera position (near the followed player).
+	// Snap back to the actual freeze spot so break effects spawn at the right location.
+	if (ent->client->frozen_body) {
+		ent->s.origin = ent->client->frozen_body->s.origin;
+		gi.linkentity(ent);
+	}
+	/*freeze*/
+
 	ent->client->respawn_time = level.time + 1_sec;
 
 	if (ent->waterlevel == 3)
@@ -299,8 +325,25 @@ void playerBreak(gentity_t *ent, int force) {
 
 	ent->client->frozen = false;
 	ent->client->eliminated = false;
+	ent->client->freeze_chase_mode = 0;
+	if (ent->client->follow_target)
+		FreeFollower(ent);
 	freeze[freeze_idx(ent->client->sess.team)].update = true;
+	gi.configstring(CONFIG_CHASE_PLAYER_NAME + (ent - g_entities - 1),
+		ent->client->pers.netname);
 	ent->client->ps.stats[STAT_CHASE] = 0;
+	/*freeze*/
+	{
+		int slot = (int)(ent - g_entities) - 1;
+		if (slot >= 0 && slot < (int)MAX_CLIENTS_KEX) {
+			if (!thaw_records[slot].round_end_break) {
+				thaw_records[slot].origin = ent->s.origin;
+				thaw_records[slot].in_place = true;
+			}
+			thaw_records[slot].round_end_break = false;
+		}
+	}
+	/*freeze*/
 	RemoveFrozenBodyGhost(ent);
 	ent->svflags &= ~SVF_NOCLIENT;
 }
@@ -310,8 +353,24 @@ void playerUnfreeze(gentity_t *ent) {
 		playerBreak(ent, 50);
 		return;
 	}
-	if (ent->waterlevel == 3 && !((level.time.milliseconds() / 100) % 4))
-		ent->client->frozen_time -= 150_ms;
+	/*freeze*/
+	if (ent->waterlevel > 0) {
+		if (ent->watertype & CONTENTS_LAVA) {
+			// Lava: cap remaining timer to 1 second (frame-rate independent)
+			gtime_t lava_limit = level.time + 1_sec;
+			if (ent->client->frozen_time > lava_limit)
+				ent->client->frozen_time = lava_limit;
+		} else if (ent->watertype & CONTENTS_SLIME) {
+			// Slime: cap remaining timer to 3 seconds
+			gtime_t slime_limit = level.time + 3_sec;
+			if (ent->client->frozen_time > slime_limit)
+				ent->client->frozen_time = slime_limit;
+		} else if (ent->waterlevel == 3 && !((level.time.milliseconds() / 100) % 4)) {
+			// Water: existing 150ms/frame acceleration
+			ent->client->frozen_time -= 150_ms;
+		}
+	}
+	/*freeze*/
 
 	if (level.time > ent->client->thaw_time) {
 		gentity_t *thawer = ent->client->resp.thawer;
@@ -319,21 +378,27 @@ void playerUnfreeze(gentity_t *ent) {
 			ent->client->resp.thawer = nullptr;
 			ent->client->thaw_time = HOLD_FOREVER;
 		} else {
-			thawer->client->resp.score++;
-			thawer->client->resp.thawed++;
-			freeze[freeze_idx(ent->client->sess.team)].thawed++;
+			if (!IsScoringDisabled()) {
+				thawer->client->resp.score++;
+				thawer->client->resp.thawed++;
+				freeze[freeze_idx(ent->client->sess.team)].thawed++;
+			}
 			if (rand() & 1)
 				gi.LocBroadcast_Print(PRINT_HIGH, "{} thaws {} like a package of frozen peas.\n",
 					thawer->client->resp.netname, ent->client->resp.netname);
 			else
 				gi.LocBroadcast_Print(PRINT_HIGH, "{} evicts {} from their igloo.\n",
 					thawer->client->resp.netname, ent->client->resp.netname);
+			thawer->client->pers.thaw_protect_time = level.time + 2_sec;
 			playerBreak(ent, 100);
 		}
 	}
 }
 
 void playerMove(gentity_t *ent) {
+	if (!ClientIsPlaying(ent->client) || ent->client->resp.spectator)
+		return;
+
 	vec3_t forward;
 	AngleVectors(ent->s.angles, forward, nullptr, nullptr);
 
@@ -363,12 +428,27 @@ void freezeMain(gentity_t *ent) {
 	if (ent->client->resp.spectator)
 		return;
 	if (ent->client->frozen) {
-		freezeEffects(ent);
-		cmdMoan(ent);
+		// Bots auto-moan; human players moan on fire press (handled in the fire handler).
+		if (ent->svflags & SVF_BOT)
+			cmdMoan(ent);
 		playerThaw(ent);
 		playerUnfreeze(ent);
-		if (ent->client->follow_target)
+		freezeEffects(ent);
+		if (ent->client->follow_target) {
 			UpdateChaseCam(ent);
+		} else if (ent->movetype == MOVETYPE_FREECAM) {
+			// follow_target was cleared externally (FreeClientFollowers); auto-switch or snap to body
+			GetFollowTarget(ent);
+			if (!ent->client->follow_target && ent->client->frozen_body) {
+				ent->s.origin = ent->client->frozen_body->s.origin;
+				ent->movetype = MOVETYPE_NONE;
+				gi.linkentity(ent);
+			}
+		} else {
+			// At physical position: sync ghost so proximity checks and thaw-in-place
+			// track where the body actually is (e.g. after being pushed).
+			UpdateFrozenBodyGhost(ent);
+		}
 	} else if (ent->health > 0)
 		playerMove(ent);
 }
@@ -377,10 +457,30 @@ void freezeMain(gentity_t *ent) {
 // Ghost entity (frozen body spectator target)
 // ============================================================
 
+static THINK(FrozenBodyGhostThink) (gentity_t *ghost) -> void {
+	ghost->nextthink = level.time + 100_ms;
+
+	gentity_t *owner = (gentity_t *)ghost->owner;
+	if (!owner || !owner->inuse || !owner->client || !owner->client->frozen ||
+		owner->client->frozen_body != ghost) {
+		G_FreeEntity(ghost);
+		return;
+	}
+
+	// Detect crush: bounding box overlapping solid world geometry
+	trace_t tr = gi.trace(ghost->s.origin, ghost->mins, ghost->maxs, ghost->s.origin, ghost, MASK_SOLID);
+	if (tr.startsolid) {
+		if (ghost->timestamp == 0_ms)
+			ghost->timestamp = level.time;
+		else if (level.time - ghost->timestamp > 3_sec)
+			playerBreak(owner, 100);
+	} else {
+		ghost->timestamp = 0_ms;
+	}
+}
+
 void CreateFrozenBodyGhost(gentity_t *ent) {
 	if (ent->client->frozen_body || !ent->client->frozen)
-		return;
-	if (ent->svflags & SVF_BOT)
 		return;
 
 	gentity_t *ghost = G_Spawn();
@@ -390,14 +490,18 @@ void CreateFrozenBodyGhost(gentity_t *ent) {
 	ghost->s = ent->s;
 	ghost->s.number = ghost - g_entities;
 	ghost->classname = "frozen_body_ghost";
-	ghost->svflags = SVF_NONE;
-	ghost->solid = SOLID_NOT;
+	ghost->svflags = SVF_NOCLIENT;
+	ghost->solid = SOLID_BBOX;
 	ghost->movetype = MOVETYPE_NONE;
 	ghost->takedamage = false;
 	ghost->owner = ent;
 	ghost->s.origin = ent->s.origin;
-	ghost->mins = ent->mins;
-	ghost->maxs = ent->maxs;
+	// Always use standing player dims — ent->mins/maxs are corrupted by
+	// player_die (maxs[2]=-8) and subsequent pmove (maxs[2]=4 for PM_DEAD).
+	ghost->mins = PLAYER_MINS;
+	ghost->maxs = PLAYER_MAXS;
+	ghost->think = FrozenBodyGhostThink;
+	ghost->nextthink = level.time + 100_ms;
 	gi.linkentity(ghost);
 
 	ent->client->frozen_body = ghost;
@@ -445,8 +549,12 @@ void freezeEffects(gentity_t *ent) {
 		return;
 	if (!ent->client->frozen)
 		return;
-	if (!ent->client->resp.thawer || ((level.time.milliseconds() / 100) % 16) < 8)
+	if (!ent->client->resp.thawer || ((level.time.milliseconds() / 100) % 16) < 8) {
 		playerShell(ent);
+	} else {
+		ent->s.effects &= ~EF_COLOR_SHELL;
+		ent->s.renderfx &= ~(RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE);
+	}
 }
 
 // ============================================================
@@ -459,7 +567,7 @@ void cmdMoan(gentity_t *ent) {
 	if (!(ent->client->resp.help & frozen_help) && !(ent->svflags & SVF_BOT)) {
 		ent->client->showscores = false;
 		ent->client->resp.help |= frozen_help;
-		gi.LocCenter_Print(ent, "You have been frozen.\nWait to be saved.\nUse '[' or ']' for Chasecam.");
+		gi.LocCenter_Print(ent, "You have been frozen.\nWait to be saved.\nTap Jump to cycle views. Tap Fire or [ ] to switch players.");
 		gi.sound(ent, CHAN_AUTO, gi.soundindex("misc/talk1.wav"), 1, ATTN_STATIC, 0);
 	}
 	if (ent->client->moan_time > level.time)
@@ -489,6 +597,13 @@ void breakTeam(int team) {
 		gentity_t *ent = g_entities + 1 + i;
 		if (!ent->inuse) continue;
 		if (ent->client->frozen) {
+			/*freeze*/
+			{
+				int slot = (int)(ent - g_entities) - 1;
+				if (slot >= 0 && slot < (int)MAX_CLIENTS_KEX)
+					thaw_records[slot].round_end_break = true;
+			}
+			/*freeze*/
 			ent->client->frozen_time = break_time;
 			break_time += 250_ms;
 			continue;

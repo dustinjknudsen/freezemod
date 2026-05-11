@@ -1333,11 +1333,11 @@ static void G_Menu_Join_Team_Free(gentity_t *ent, menu_hnd_t *p) {
 }
 
 static void G_Menu_Join_Team_Red(gentity_t *ent, menu_hnd_t *p) {
-	SetTeam(ent, !g_teamplay_allow_team_pick->integer ? PickTeam(-1) : TEAM_RED, false, false, false);
+	SetTeam(ent, (GT(GT_FREEZE) || g_teamplay_allow_team_pick->integer) ? TEAM_RED : PickTeam(-1), false, false, false);
 }
 
 static void G_Menu_Join_Team_Blue(gentity_t *ent, menu_hnd_t *p) {
-	if (!g_teamplay_allow_team_pick->integer)
+	if (!GT(GT_FREEZE) && !g_teamplay_allow_team_pick->integer)
 		return;
 
 	SetTeam(ent, TEAM_BLUE, false, false, false);
@@ -1810,11 +1810,8 @@ static void G_Menu_Join_Update(gentity_t *ent) {
 
 	if (pmax < 1) pmax = 1;
 
-	G_Menu_SetGamemodName(entries + jmenu_gamemod);
-	G_Menu_SetGametypeName(entries + jmenu_gametype);
-
 	if (Teams()) {
-		if (!g_teamplay_allow_team_pick->integer && !level.locked[TEAM_RED] && !level.locked[TEAM_BLUE]) {
+		if (!GT(GT_FREEZE) && !g_teamplay_allow_team_pick->integer && !level.locked[TEAM_RED] && !level.locked[TEAM_BLUE]) {
 			Q_strlcpy(entries[jmenu_teams_join_red].text, G_Fmt("Join a Team ({}/{})", num_red + num_blue, pmax).data(), sizeof(entries[jmenu_teams_join_red].text));
 			Q_strlcpy(entries[jmenu_teams_join_blue].text, "", sizeof(entries[jmenu_teams_join_blue].text));
 
@@ -1902,6 +1899,8 @@ static void G_Menu_Join_Update(gentity_t *ent) {
 
 	G_Menu_SetHostName(entries + jmenu_hostname);
 	G_Menu_SetGametypeName(entries + jmenu_gametype);
+	if (strcmp(entries[jmenu_hostname].text, entries[jmenu_gametype].text) == 0)
+		entries[jmenu_hostname].text[0] = '\0';
 	G_Menu_SetLevelName(entries + jmenu_level);
 
 	G_Menu_SetGamemodName(entries + jmenu_gamemod);

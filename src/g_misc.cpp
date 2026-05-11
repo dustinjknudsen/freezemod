@@ -165,7 +165,10 @@ gentity_t *ThrowGib(gentity_t *self, const char *gibname, int damage, gib_type_t
 	gib->monsterinfo.engine_sound = 0;
 
 	if (GT(GT_FREEZE)) {
-		gib->s.renderfx |= (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE);
+		if (self->client && self->client->sess.team == TEAM_RED)
+			gib->s.renderfx |= RF_SHELL_RED;
+		else
+			gib->s.renderfx |= RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE;
 		gib->s.effects |= EF_COLOR_SHELL;
 	}
 

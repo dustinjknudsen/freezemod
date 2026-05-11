@@ -77,7 +77,7 @@ template<typename... Args>
 #else
 
 #define G_Fmt(str, ...) \
-	G_Fmt_(FMT_STRING(str), __VA_ARGS__)
+	G_Fmt_(FMT_STRING(str), ##__VA_ARGS__)
 
 template<typename S, typename... Args>
 [[nodiscard]] inline std::string_view G_Fmt_(const S &format_str, Args &&... args)

@@ -434,6 +434,11 @@ static void ClientObituary(gentity_t *self, gentity_t *inflictor, gentity_t *att
 	if (mod.id == MOD_CHANGE_TEAM)
 		return;
 
+	if (GT(GT_FREEZE) && mod.id == MOD_WATER) {
+		gi.LocBroadcast_Print(PRINT_MEDIUM, "{} drowned and became an ice cube.\n", self->client->resp.netname);
+		return;
+	}
+
 	int kill_count = self->client->resp.kill_count;
 	self->client->resp.kill_count = 0;
 
@@ -1184,6 +1189,16 @@ DIE(player_die) (gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int
 		if (!self->deadflag) {
 			if (GT(GT_FREEZE) && freezeCheck(self, mod)) {
 				freezeAnim(self);
+				/*freeze*/
+				// Set a short initial timer for lava/slime deaths. The engine stops updating
+				// watertype for stationary SOLID_NOT entities, so the per-frame clamp in
+				// playerUnfreeze can't fire for the "died in lava" case.
+				switch (mod.id) {
+				case MOD_LAVA:  self->client->frozen_time = level.time + 1_sec;  break;
+				case MOD_SLIME: self->client->frozen_time = level.time + 3_sec;  break;
+				default: break;
+				}
+				/*freeze*/
 				ClientSetEliminated(self);
 				return;
 			} else {
@@ -2802,6 +2817,12 @@ void ClientSpawn(gentity_t *ent) {
 	// find a spawn point
 	// do it before setting health back up, so farthest
 	// ranging doesn't count this client
+	/*freeze*/
+	int thaw_slot = (int)(ent - g_entities) - 1;
+	bool thaw_in_place = GT(GT_FREEZE) && thaw_slot >= 0 && thaw_slot < (int)MAX_CLIENTS_KEX && thaw_records[thaw_slot].in_place;
+	vec3_t thaw_origin = thaw_in_place ? thaw_records[thaw_slot].origin : vec3_t{};
+	if (thaw_in_place) thaw_records[thaw_slot].in_place = false;
+	/*freeze*/
 	bool valid_spawn = false;
 	bool force_spawn = client->awaiting_respawn && level.time > client->respawn_timeout;
 	bool is_landmark = false;
@@ -2813,6 +2834,14 @@ void ClientSpawn(gentity_t *ent) {
 	else
 		ent->flags &= ~FL_NOTARGET;
 
+	/*freeze*/
+	if (thaw_in_place) {
+		// Frozen body's bbox was guaranteed clear (SOLID_BBOX ghost held the space).
+		spawn_origin = thaw_origin;
+		spawn_angles = {};
+		valid_spawn = true;
+	} else
+	/*freeze*/
 	if (use_squad_respawn) {
 		spawn_origin = squad_respawn_position;
 		spawn_angles = squad_respawn_angles;
@@ -2945,7 +2974,8 @@ void ClientSpawn(gentity_t *ent) {
 	ent->flags &= ~(FL_NO_KNOCKBACK | FL_ALIVE_KNOCKBACK_ONLY | FL_NO_DAMAGE_EFFECTS | FL_SAM_RAIMI);
 	ent->svflags &= ~SVF_DEADMONSTER;
 	ent->svflags |= SVF_PLAYER;
-	ent->client->pers.last_spawn_time = level.time;
+	ent->client->pers.last_spawn_time   = level.time;
+	ent->client->pers.spawn_ghost_time  = level.time + 1500_ms;
 
 	ent->mins = PLAYER_MINS;
 	ent->maxs = PLAYER_MAXS;
@@ -3841,6 +3871,9 @@ bool ClientConnect(gentity_t *ent, char *userinfo, const char *social_id, bool i
 	gi.WriteString("bind F3 readyup\n");
 	//gi.WriteString("say hello\n");
 	gi.unicast(ent, true);
+	/*freeze*/
+	G_StuffCmd(ent, "bind \\ \"cmd leavechase\"\n");
+	/*freeze*/
 
 	return true;
 }
@@ -4265,6 +4298,18 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 	client->latched_buttons |= client->buttons & ~client->oldbuttons;
 	client->cmd = *ucmd;
 
+	// Freeze tag off-hand grapple hook: BUTTON_HOLSTER hold-to-hook
+	if (GT(GT_FREEZE) && ClientIsPlaying(client) && !client->eliminated && !ent->deadflag && !client->frozen) {
+		bool hold = (client->buttons & BUTTON_HOLSTER);
+		bool newly_pressed = (client->latched_buttons & BUTTON_HOLSTER);
+		if (newly_pressed && !client->grapple_ent)
+			Weapon_Hook(ent);
+		else if (!hold && client->grapple_ent)
+			Weapon_Grapple_DoReset(client);
+		if (client->grapple_ent || newly_pressed)
+			client->latched_buttons &= ~BUTTON_HOLSTER;
+	}
+
 	if (!client->initial_menu_shown && client->initial_menu_delay && level.time > client->initial_menu_delay) {
 		if (!ClientIsPlaying(client) && (!client->sess.initialised || client->sess.inactive)) {
 			if (ent->client->sess.admin && g_owner_push_scores->integer)
@@ -4405,8 +4450,9 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 
 		// [Paril-KEX]
 		if (!G_ShouldPlayersCollide(false) ||
-			(InCoopStyle() && !(ent->clipmask & CONTENTS_PLAYER)) // if player collision is on and we're temporarily ghostly...
-			)
+			(InCoopStyle() && !(ent->clipmask & CONTENTS_PLAYER)) || // if player collision is on and we're temporarily ghostly...
+			ent->client->pers.spawn_ghost_time > level.time ||
+			ent->client->pers.thaw_protect_time > level.time)
 			client->ps.pmove.pm_flags |= PMF_IGNORE_PLAYER_COLLISION;
 		else
 			client->ps.pmove.pm_flags &= ~PMF_IGNORE_PLAYER_COLLISION;
@@ -4541,15 +4587,27 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 		if (!ClientIsPlaying(client) || (client->eliminated && !client->sess.is_a_bot)) {
 			client->latched_buttons = BUTTON_NONE;
 
-			if (client->follow_target) {
-				FreeFollower(ent);
-				if (GT(GT_FREEZE) && ent->client->frozen && ent->client->frozen_body) {
-					ent->s.origin = ent->client->frozen_body->s.origin;
-					ent->movetype = MOVETYPE_NONE;
-					gi.linkentity(ent);
+			/*freeze*/
+			if (GT(GT_FREEZE)) {
+				// Fire cycles through players; entering from deathcam starts in first-person.
+				if (client->follow_target) {
+					FollowNext(ent);
+				} else {
+					ent->client->freeze_chase_mode = 1;
+					GetFollowTarget(ent);
 				}
-			} else
-				GetFollowTarget(ent);
+				// Frozen humans moan on fire press (debounced); bots auto-moan via freezeMain.
+				if (ent->client->frozen && !(ent->svflags & SVF_BOT))
+					cmdMoan(ent);
+			} else {
+			/*freeze*/
+				if (client->follow_target)
+					FreeFollower(ent);
+				else
+					GetFollowTarget(ent);
+			/*freeze*/
+			}
+			/*freeze*/
 		} else if (!ent->client->weapon_thunk) {
 			// we can only do this during a ready state and
 			// if enough time has passed from last fire
@@ -4569,10 +4627,36 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 			if (ucmd->buttons & BUTTON_JUMP) {
 				if (!(client->ps.pmove.pm_flags & PMF_JUMP_HELD)) {
 					client->ps.pmove.pm_flags |= PMF_JUMP_HELD;
-					if (client->follow_target)
-						FollowNext(ent);
-					else
-						GetFollowTarget(ent);
+					/*freeze*/
+					if (GT(GT_FREEZE)) {
+						// Jump cycles view mode: deathcam → first-person → third-person → deathcam.
+						uint8_t &mode = ent->client->freeze_chase_mode;
+						if (mode == 0) {
+							mode = 1;
+							GetFollowTarget(ent);
+						} else if (mode == 1) {
+							mode = 2;
+						} else {
+							FreeFollower(ent);
+							if (ent->client->frozen) {
+								ent->s.modelindex = MODELINDEX_PLAYER;
+								ent->s.modelindex2 = MODELINDEX_PLAYER;
+								if (ent->client->frozen_body) {
+									ent->s.origin = ent->client->frozen_body->s.origin;
+									ent->movetype = MOVETYPE_NONE;
+									gi.linkentity(ent);
+								}
+							}
+						}
+					} else {
+					/*freeze*/
+						if (client->follow_target)
+							FollowNext(ent);
+						else
+							GetFollowTarget(ent);
+					/*freeze*/
+					}
+					/*freeze*/
 				}
 			} else
 				client->ps.pmove.pm_flags &= ~PMF_JUMP_HELD;

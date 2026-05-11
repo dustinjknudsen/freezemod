@@ -3482,6 +3482,8 @@ struct client_persistant_t {
 	gtime_t			kill_time;
 
 	gtime_t			last_spawn_time;
+	gtime_t			spawn_ghost_time;   // full immunity + no-collision until this time or first shot (respawn protection)
+	gtime_t			thaw_protect_time;  // telefrag-only immunity + no-collision for thawer after breaking a freeze
 };
 
 // player config vars:
@@ -3792,6 +3794,7 @@ struct gclient_t {
 	gtime_t		frozen_time;
 	gtime_t		moan_time;
 	bool		frozen;
+	uint8_t		freeze_chase_mode; // 0=deathcam, 1=first-person, 2=third-person
 /*freeze*/
 
 	bool		ready_to_exit;

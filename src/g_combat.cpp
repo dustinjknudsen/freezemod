@@ -491,6 +491,11 @@ void T_Damage(gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, const 
 	if (!targ->takedamage)
 		return;
 
+	// Spawn ghost: newly-respawned players are damage-immune until ghost expires or they fire.
+	if (targ->client && targ->client->pers.spawn_ghost_time > level.time &&
+	    !(dflags & DAMAGE_NO_PROTECTION))
+		return;
+
 	if ((g_instagib->integer || GT(GT_INSTAGIB)) && attacker->client && targ->client) {
 		// [Kex] always kill no matter what on instagib
 		damage = 9999;

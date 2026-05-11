@@ -1,6 +1,9 @@
 // Copyright (c) ZeniMax Media Inc.
 // Licensed under the GNU General Public License 2.0.
 #include "g_local.h"
+/*freeze*/
+#include "g_freeze.h"
+/*freeze*/
 
 void FreeFollower(gentity_t *ent) {
 	if (!ent)
@@ -8,6 +11,19 @@ void FreeFollower(gentity_t *ent) {
 
 	if (!ent->client->follow_target)
 		return;
+
+	/*freeze*/
+	// Clear our instance bit from the target we're leaving so it no longer appears dark to others.
+	{
+		int obs_idx = (int)(ent - g_entities) - 1;
+		gentity_t *old_targ = ent->client->follow_target;
+		if (GT(GT_FREEZE) && obs_idx >= 0 && obs_idx < 8 && old_targ->inuse) {
+			old_targ->s.instance_bits &= ~(uint8_t)(1u << obs_idx);
+			if (!old_targ->s.instance_bits)
+				old_targ->svflags &= ~SVF_INSTANCED;
+		}
+	}
+	/*freeze*/
 
 	ent->client->follow_target = nullptr;
 	ent->client->ps.pmove.pm_flags &= ~(PMF_NO_POSITIONAL_PREDICTION | PMF_NO_ANGULAR_PREDICTION);
@@ -22,6 +38,23 @@ void FreeFollower(gentity_t *ent) {
 	ent->client->ps.screen_blend = {};
 	ent->client->ps.damage_blend = {};
 	ent->client->ps.rdflags = RDF_NONE;
+
+	/*freeze*/
+	ent->client->freeze_chase_mode = 0;
+	ent->svflags &= ~(SVF_NOCLIENT | SVF_INSTANCED);
+	ent->s.instance_bits = 0;
+	// Restore player model zeroed by vanilla chasecam path if still frozen
+	if (ent->client->frozen) {
+		ent->s.modelindex = MODELINDEX_PLAYER;
+		ent->s.modelindex2 = MODELINDEX_PLAYER;
+		// Restore ghost to invisible (position anchor only); no longer in chasecam.
+		if (ent->client->frozen_body) {
+			ent->client->frozen_body->svflags = (ent->client->frozen_body->svflags & ~SVF_INSTANCED) | SVF_NOCLIENT;
+			ent->client->frozen_body->s.instance_bits = 0;
+			gi.linkentity(ent->client->frozen_body);
+		}
+	}
+	/*freeze*/
 }
 
 void FreeClientFollowers(gentity_t *ent) {
@@ -45,8 +78,18 @@ void UpdateChaseCam(gentity_t *ent) {
 	vec3_t	angles;
 	
 	// is our follow target gone?
-	if (!targ || !targ->inuse || !targ->client || !ClientIsPlaying(targ->client) || targ->client->eliminated) {
-		//SetTeam(ent, TEAM_SPECTATOR, false, false, false);
+	if (!targ || !targ->inuse || !targ->client || !ClientIsPlaying(targ->client) ||
+		(targ->client->eliminated && !(targ->client->frozen && ent->client->sess.team == TEAM_SPECTATOR))) {
+		if (ent->client->frozen) {
+			FreeFollower(ent);
+			GetFollowTarget(ent);
+			if (!ent->client->follow_target && ent->client->frozen_body) {
+				ent->s.origin = ent->client->frozen_body->s.origin;
+				ent->movetype = MOVETYPE_NONE;
+				gi.linkentity(ent);
+			}
+			return;
+		}
 		FreeClientFollowers(targ);
 		return;
 	}
@@ -54,10 +97,47 @@ void UpdateChaseCam(gentity_t *ent) {
 	ownerv = targ->s.origin;
 	oldgoal = ent->s.origin;
 
+	/*freeze*/
+	// In freeze tag, freeze_chase_mode controls view for everyone (frozen + spectators).
+	// Outside freeze tag, non-frozen followers use g_eyecam as before.
+	bool use_eyecam = GT(GT_FREEZE)
+		? (ent->client->freeze_chase_mode == 1)
+		: (bool)g_eyecam->integer;
+	bool freeze_thirdperson = ent->client->frozen && ent->client->freeze_chase_mode == 2;
+
+	// instance_bits bit for this observer (0-based slot index; uint8_t covers slots 1-8)
+	int obs_idx = (int)(ent - g_entities) - 1;
+	bool can_instance = GT(GT_FREEZE) && obs_idx >= 0 && obs_idx < 8;
+	// Clear our bit each frame before we decide whether to re-set it below.
+	if (can_instance)
+		targ->s.instance_bits &= ~(uint8_t)(1u << obs_idx);
+	/*freeze*/
+
 	// Q2Eaks eyecam handling
-	if (g_eyecam->integer) {
-		// mark the chased player as instanced so we can disable their model's visibility
+	if (use_eyecam) {
+		/*freeze*/
+		// Set SVF_INSTANCED so the engine uses instance_bits for per-client visibility.
+		// Set our bit so the engine skips sending the target model to us (no back-of-head).
+		// Other clients' bits are 0, so they see the model normally (no dark gray).
 		targ->svflags |= SVF_INSTANCED;
+		if (can_instance)
+			targ->s.instance_bits |= (uint8_t)(1u << obs_idx);
+		// For frozen players in eyecam: keep entity at body for team indicator.
+		// For live spectators: hide entity to prevent ghost overlay at target's position.
+		if (GT(GT_FREEZE) && ent->client->frozen) {
+			ent->svflags &= ~SVF_NOCLIENT;
+			if (can_instance) {
+				ent->svflags |= SVF_INSTANCED;
+				ent->s.instance_bits |= (uint8_t)(1u << obs_idx);
+			}
+			ent->s.modelindex = MODELINDEX_PLAYER;
+			ent->s.modelindex2 = MODELINDEX_PLAYER;
+		} else if (GT(GT_FREEZE)) {
+			ent->svflags |= SVF_NOCLIENT;
+		} else {
+			ent->svflags &= ~SVF_NOCLIENT;
+		}
+		/*freeze*/
 
 		// copy everything from ps but pmove, pov, stats, and team
 		ent->client->ps.viewangles = targ->client->ps.viewangles;
@@ -81,10 +161,10 @@ void UpdateChaseCam(gentity_t *ent) {
 		// Zero delta_angles - view is fully authoritative, avoids jitter from spectator cmd_angles mismatch
 		ent->client->ps.pmove.delta_angles = {};
 		ent->client->ps.pmove.viewheight = targ->client->ps.pmove.viewheight;
-		
+
 		ent->client->pers.hand = targ->client->pers.hand;
 		ent->client->pers.weapon = targ->client->pers.weapon;
-		
+
 		//FIXME: color shells and damage blends not working
 
 		// unadjusted view and origin handling
@@ -94,9 +174,13 @@ void UpdateChaseCam(gentity_t *ent) {
 		// Align ent origin with pmove (view position) for consistency
 		goal = targ->client->ps.pmove.origin;
 	}
-	// vanilla chasecam code
+	// vanilla / third-person chasecam
 	else {
-		targ->svflags &= ~SVF_INSTANCED;
+		/*freeze*/
+		// Only clear SVF_INSTANCED if no other observer still has their bit set on this target.
+		if (!targ->s.instance_bits)
+			targ->svflags &= ~SVF_INSTANCED;
+		/*freeze*/
 
 		ownerv[2] += targ->viewheight;
 
@@ -139,18 +223,58 @@ void UpdateChaseCam(gentity_t *ent) {
 
 		ent->client->ps.gunindex = 0;
 		ent->client->ps.gunskin = 0;
-		ent->s.modelindex = 0;
-		ent->s.modelindex2 = 0;
-		ent->s.modelindex3 = 0;
+		if (GT(GT_FREEZE) && ent->client->frozen) {
+			// Keep model visible for team indicator; hide from self via instancing.
+			if (can_instance) {
+				ent->svflags |= SVF_INSTANCED;
+				ent->s.instance_bits |= (uint8_t)(1u << obs_idx);
+			}
+			ent->s.modelindex = MODELINDEX_PLAYER;
+			ent->s.modelindex2 = MODELINDEX_PLAYER;
+		} else {
+			ent->s.modelindex = 0;
+			ent->s.modelindex2 = 0;
+			ent->s.modelindex3 = 0;
+		}
 	}
 
-	if (targ->deadflag)
-		ent->client->ps.pmove.pm_type = PM_DEAD;
-	else
+	/*freeze*/
+	if (freeze_thirdperson) {
+		// Entity stays at body for team indicator; camera goes to goal via ps.pmove.origin.
+		// SVF_NOCLIENT removed — instancing (set above) hides entity from self only.
+		ent->svflags &= ~SVF_NOCLIENT;
+		if (can_instance) {
+			ent->svflags |= SVF_INSTANCED;
+			ent->s.instance_bits |= (uint8_t)(1u << obs_idx);
+		}
 		ent->client->ps.pmove.pm_type = PM_FREEZE;
+		ent->client->ps.pmove.pm_flags |= PMF_NO_POSITIONAL_PREDICTION | PMF_NO_ANGULAR_PREDICTION;
+		ent->client->ps.pmove.viewheight = 0;
+		ent->client->ps.viewoffset = {};
+		ent->client->ps.pmove.origin = goal;
+		if (ent->client->frozen_body)
+			ent->s.origin = ent->client->frozen_body->s.origin;
+		else
+			ent->s.origin = goal;
+	} else {
+	/*freeze*/
+		if (targ->deadflag)
+			ent->client->ps.pmove.pm_type = PM_DEAD;
+		else
+			ent->client->ps.pmove.pm_type = PM_FREEZE;
 
-	ent->s.origin = goal;
-	if (g_eyecam->integer != 1)
+		// For frozen players: entity at body (indicator), camera at goal via ps.pmove.origin.
+		if (GT(GT_FREEZE) && ent->client->frozen && ent->client->frozen_body) {
+			ent->client->ps.pmove.origin = goal;
+			ent->s.origin = ent->client->frozen_body->s.origin;
+		} else {
+			ent->s.origin = goal;
+		}
+	/*freeze*/
+	}
+	/*freeze*/
+
+	if (!use_eyecam)
 		ent->client->ps.pmove.delta_angles = targ->client->v_angle - ent->client->resp.cmd_angles;
 
 	if (targ->deadflag) {
@@ -162,13 +286,53 @@ void UpdateChaseCam(gentity_t *ent) {
 		ent->client->v_angle = targ->client->v_angle;
 		AngleVectors(ent->client->v_angle, ent->client->v_forward, nullptr, nullptr);
 	}
-	
+
 	gentity_t *e = targ ? targ : ent;
 	ent->client->ps.stats[STAT_SHOW_STATUSBAR] = !ClientIsPlaying(e->client) || e->client->eliminated ? 0 : 1;
 
 	ent->viewheight = 0;
-	if (g_eyecam->integer != 1)
+	if (!use_eyecam)
 		ent->client->ps.pmove.pm_flags |= PMF_NO_POSITIONAL_PREDICTION | PMF_NO_ANGULAR_PREDICTION;
+	/*freeze*/
+	// Spectators in mode 2 use the vanilla path, which doesn't zero viewheight.
+	// Eyecam (mode 1) copies the target's viewheight; clear it on the switch to third-person.
+	if (GT(GT_FREEZE) && !ent->client->frozen && ent->client->freeze_chase_mode == 2) {
+		ent->client->ps.pmove.viewheight = 0;
+		ent->client->ps.viewoffset = {};
+	}
+	/*freeze*/
+
+	/*freeze*/
+	if (GT(GT_FREEZE) && targ->client->frozen) {
+		ent->client->ps.screen_blend = {};
+		if (targ->client->sess.team == TEAM_RED)
+			G_AddBlend(0.6f, 0.0f, 0.0f, 0.1f, ent->client->ps.screen_blend);
+		else
+			G_AddBlend(1.0f, 1.0f, 1.0f, 0.1f, ent->client->ps.screen_blend);
+	}
+	/*freeze*/
+
+	/*freeze*/
+	// Let the frozen player see their own frozen body from the chased player's perspective.
+	// The ghost is normally SVF_NOCLIENT; make it visible only to this observer.
+	if (ent->client->frozen && ent->client->frozen_body && can_instance) {
+		gentity_t *ghost = ent->client->frozen_body;
+		ghost->svflags = (ghost->svflags & ~SVF_NOCLIENT) | SVF_INSTANCED;
+		// All bits set except observer's: everyone else cannot see the ghost.
+		ghost->s.instance_bits = (uint8_t)(~(1u << obs_idx));
+		// Sync visual state — modelindex may be 0 on ent in eyecam, so force MODELINDEX_PLAYER.
+		ghost->s.modelindex = MODELINDEX_PLAYER;
+		ghost->s.modelindex2 = MODELINDEX_PLAYER;
+		ghost->s.frame   = ent->s.frame;
+		ghost->s.skinnum = ent->s.skinnum;
+		ghost->s.effects = ent->s.effects;
+		ghost->s.renderfx = ent->s.renderfx;
+		gi.linkentity(ghost);
+	}
+	/*freeze*/
+
+	/*freeze*/
+
 	gi.linkentity(ent);
 }
 
@@ -255,7 +419,7 @@ void FollowNext(gentity_t *ent) {
 			continue;
 		if (ent->client->eliminated && ent->client->sess.team != e->client->sess.team)
 			continue;
-		if (ClientIsPlaying(e->client) && !e->client->eliminated)
+		if (ClientIsPlaying(e->client) && (!e->client->eliminated || (e->client->frozen && ent->client->sess.team == TEAM_SPECTATOR)))
 			break;
 	} while (e != ent->client->follow_target);
 
@@ -281,7 +445,7 @@ void FollowPrev(gentity_t *ent) {
 			continue;
 		if (ent->client->eliminated && ent->client->sess.team != e->client->sess.team)
 			continue;
-		if (ClientIsPlaying(e->client) && !e->client->eliminated)
+		if (ClientIsPlaying(e->client) && (!e->client->eliminated || (e->client->frozen && ent->client->sess.team == TEAM_SPECTATOR)))
 			break;
 	} while (e != ent->client->follow_target);
 
@@ -318,7 +482,7 @@ void FollowCycle(gentity_t *ent, int dir) {
 		if (!ClientIsPlaying(follow_ent->client))
 			continue;
 
-		if (follow_ent->client->eliminated)
+		if (follow_ent->client->eliminated && !(follow_ent->client->frozen && ent->client->sess.team == TEAM_SPECTATOR))
 			continue;
 
 		if (ent->client->eliminated && ent->client->sess.team != follow_ent->client->sess.team)
@@ -341,7 +505,7 @@ void FollowCycle(gentity_t *ent, int dir) {
 
 void GetFollowTarget(gentity_t *ent) {
 	for (auto ec : active_clients()) {
-		if (ec->inuse && ClientIsPlaying(ec->client) && !ec->client->eliminated) {
+		if (ec->inuse && ClientIsPlaying(ec->client) && (!ec->client->eliminated || (ec->client->frozen && ent->client->sess.team == TEAM_SPECTATOR))) {
 			if (ent->client->eliminated && ent->client->sess.team != ec->client->sess.team)
 				continue;
 			ent->client->follow_target = ec;

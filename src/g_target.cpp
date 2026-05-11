@@ -390,13 +390,13 @@ static USE(use_target_changelevel) (gentity_t *self, gentity_t *other, gentity_t
 				ClientSpawn(activator);
 				G_PostRespawn(activator);
 
-				activator->client->pers.last_spawn_time = level.time;
+				// activator->client->pers.last_spawn_time = level.time;
 
 				gtime_t clock = timelimit->value ? (level.match_time + gtime_t::from_min(timelimit->value) + level.overtime - level.time) : level.time - level.match_time;
 				int	t = clock.milliseconds();
 				const char *s, *s1, *s2 = "";
 
-				int t2 = (level.time - activator->client->pers.last_spawn_time).milliseconds();
+				int t2 = 0; // (level.time - activator->client->pers.last_spawn_time).milliseconds();
 				s1 = G_Fmt("{} ({})", G_TimeString(t, false), G_TimeStringMs(t2, false)).data();
 
 				s = G_Fmt("{}{}", s1, s2).data();

@@ -5,6 +5,7 @@
 #include "monsters/m_player.h"
 /*freeze*/
 #include "g_freeze.h"
+void FollowCycle(gentity_t *ent, int dir);
 /*freeze*/
 
 enum cmd_flags_t : uint32_t {
@@ -87,6 +88,14 @@ static void SelectNextItem(gentity_t *ent, item_flags_t itflags, bool menu = tru
 	} else if (menu && cl->follow_target) {
 		FollowNext(ent);
 		return;
+	} else if (ent->client->eliminated) {
+		/*freeze*/
+		if (ent->client->follow_target)
+			FollowNext(ent);
+		else
+			FollowCycle(ent, 1);
+		return;
+		/*freeze*/
 	}
 
 	// scan for the next valid one
@@ -132,6 +141,14 @@ static void SelectPrevItem(gentity_t *ent, item_flags_t itflags) {
 	} else if (cl->follow_target) {
 		FollowPrev(ent);
 		return;
+	} else if (ent->client->eliminated) {
+		/*freeze*/
+		if (ent->client->follow_target)
+			FollowPrev(ent);
+		else
+			FollowCycle(ent, -1);
+		return;
+		/*freeze*/
 	}
 
 	// scan for the previous valid one
@@ -1062,6 +1079,30 @@ static void Cmd_Forfeit_f(gentity_t *ent) {
 	QueueIntermission(G_Fmt("{} forfeits the match.", ent->client->resp.netname).data(), true, false);
 }
 
+// freeze: exit chasecam, return frozen player to body view or spectator to free-float
+static void Cmd_LeaveChasecam_f(gentity_t *ent) {
+	if (!GT(GT_FREEZE))
+		return;
+	if (!ent->client->follow_target)
+		return;
+
+	FreeFollower(ent);
+
+	if (ent->client->frozen) {
+		if (ent->client->frozen_body) {
+			ent->s.origin = ent->client->frozen_body->s.origin;
+			ent->movetype = MOVETYPE_NONE;
+			gi.linkentity(ent);
+		}
+	} else {
+		ent->svflags |= SVF_NOCLIENT;
+		ent->s.modelindex = 0;
+		ent->s.modelindex2 = 0;
+		ent->movetype = MOVETYPE_FREECAM;
+		gi.linkentity(ent);
+	}
+}
+
 /*
 =================
 Cmd_Kill_f
@@ -1079,6 +1120,16 @@ static void Cmd_Kill_f(gentity_t *ent) {
 		G_PostRespawn(ent);
 		return;
 	}
+
+	/*freeze*/
+	if (GT(GT_FREEZE) && !ent->client->frozen) {
+		gi.LocBroadcast_Print(PRINT_MEDIUM, "{} is trapped in an icy prison of their own making.\n", ent->client->pers.netname);
+		G_AdjustPlayerScore(ent->client, -1, GT(GT_TDM), -1);
+		freezeAnim(ent);
+		ClientSetEliminated(ent);
+		return;
+	}
+	/*freeze*/
 
 	ent->flags &= ~FL_GODMODE;
 	ent->health = 0;
@@ -1819,7 +1870,7 @@ void BroadcastTeamChange(gentity_t *ent, int old_team, bool inactive, bool silen
 				continue;
 			if (ec->svflags & SVF_BOT)
 				continue;
-			gi.LocClient_Print(ec, PRINT_CENTER, s);
+			gi.LocClient_Print(ec, PRINT_HIGH, s);
 		}
 		//gi.Com_Print(s);
 	}
@@ -1827,7 +1878,7 @@ void BroadcastTeamChange(gentity_t *ent, int old_team, bool inactive, bool silen
 	if (g_dm_do_readyup->integer && level.match_state == matchst_t::MATCH_WARMUP_READYUP) {
 		BroadcastReadyReminderMessage();
 	} else if (t) {
-		gi.LocClient_Print(ent, PRINT_CENTER, G_Fmt("%bind:inven:Toggles Menu%{}", t).data() );
+		gi.LocClient_Print(ent, PRINT_HIGH, t);
 	}
 }
 
@@ -2243,6 +2294,13 @@ static void Cmd_Team_f(gentity_t *ent) {
 		}
 		return;
 	}
+
+	/*freeze*/
+	if (ent->client->frozen) {
+		gi.LocClient_Print(ent, PRINT_HIGH, "You cannot switch teams while frozen.\n");
+		return;
+	}
+	/*freeze*/
 
 	const char *s = gi.argv(1);
 	team_t team = StringToTeamNum(s);
@@ -4895,6 +4953,7 @@ cmds_t client_cmds[] = {
 	{"invuse",			Cmd_InvUse_f,			CF_ALLOW_SPEC},	//spec for menu up/down
 	{"kb",				Cmd_KillBeep_f,			CF_ALLOW_SPEC | CF_ALLOW_DEAD},
 	{"kill",			Cmd_Kill_f,				CF_NONE},
+	{"leavechase",		Cmd_LeaveChasecam_f,	CF_ALLOW_DEAD | CF_ALLOW_SPEC},	/*freeze*/
 	{"kill_ai",			Cmd_Kill_AI_f,			CF_CHEAT_PROTECT},
 	{"listentities",	Cmd_ListEntities_f,		CF_ALLOW_DEAD | CF_ALLOW_INT | CF_ALLOW_SPEC | CF_CHEAT_PROTECT},
 	{"listmonsters",	Cmd_ListMonsters_f,		CF_ALLOW_DEAD | CF_ALLOW_INT | CF_ALLOW_SPEC | CF_CHEAT_PROTECT},

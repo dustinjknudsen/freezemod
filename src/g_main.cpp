@@ -10,8 +10,8 @@
 CHECK_GCLIENT_INTEGRITY;
 CHECK_ENTITY_INTEGRITY;
 
-constexpr int32_t DEFAULT_GRAPPLE_SPEED = 650; // speed of grapple in flight
-constexpr float	  DEFAULT_GRAPPLE_PULL_SPEED = 650; // speed player is pulled at
+constexpr int32_t DEFAULT_GRAPPLE_SPEED = 970; // speed of grapple in flight
+constexpr float	  DEFAULT_GRAPPLE_PULL_SPEED = 400; // speed player is pulled at
 
 std::mt19937 mt_rand;
 
@@ -984,9 +984,9 @@ static void InitGame() {
 	g_allow_grapple = gi.cvar("g_allow_grapple", "auto", CVAR_NOFLAGS);
 	g_allow_kill = gi.cvar("g_allow_kill", "1", CVAR_NOFLAGS);
 	g_grapple_offhand = gi.cvar("g_grapple_offhand", "0", CVAR_NOFLAGS);
-	g_grapple_fly_speed = gi.cvar("g_grapple_fly_speed", G_Fmt("{}", DEFAULT_GRAPPLE_SPEED).data(), CVAR_NOFLAGS);
-	g_grapple_pull_speed = gi.cvar("g_grapple_pull_speed", G_Fmt("{}", DEFAULT_GRAPPLE_PULL_SPEED).data(), CVAR_NOFLAGS);
-	g_grapple_damage = gi.cvar("g_grapple_damage", "10", CVAR_NOFLAGS);
+	g_grapple_fly_speed = gi.cvar("g_grapple_fly_speed", G_Fmt("{}", DEFAULT_GRAPPLE_SPEED).data(), CVAR_LATCH);
+	g_grapple_pull_speed = gi.cvar("g_grapple_pull_speed", G_Fmt("{}", DEFAULT_GRAPPLE_PULL_SPEED).data(), CVAR_LATCH);
+	g_grapple_damage = gi.cvar("g_grapple_damage", "10", CVAR_LATCH);
 
 	g_frag_messages = gi.cvar("g_frag_messages", "1", CVAR_NOFLAGS);
 
@@ -1390,7 +1390,7 @@ static void Entities_Reset(bool reset_players, bool reset_ghost, bool reset_scor
 				ec->client->pers.dmg_scorer = 0;
 				ec->client->pers.dmg_team = 0;
 				ec->client->respawn_time = level.time;	// +random_time(1_sec, 4_sec);
-				ec->client->pers.last_spawn_time = level.time;
+				// ec->client->pers.last_spawn_time = level.time;
 				ec->client->ps.pmove.pm_type = PM_DEAD;
 				ec->client->anim_priority = ANIM_DEATH;
 				ec->s.frame = FRAME_death308 - 1;

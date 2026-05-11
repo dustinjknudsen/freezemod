@@ -2,6 +2,7 @@
 // Licensed under the GNU General Public License 2.0.
 #include "g_local.h"
 #include "g_statusbar.h"
+#include "g_freeze.h"
 
 /*
 ======================================================================
@@ -74,6 +75,7 @@ void MoveClientToIntermission(gentity_t *ent) {
 	ent->s.modelindex3 = 0;
 	ent->s.modelindex = 0;
 	ent->s.effects = EF_NONE;
+	RemoveFrozenBodyGhost(ent);
 	ent->s.sound = 0;
 	ent->solid = SOLID_NOT;
 	ent->movetype = MOVETYPE_FREECAM;
@@ -336,31 +338,15 @@ void TeamsScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 
 		fmt::format_to(std::back_inserter(string), FMT_STRING("ifgef {} yb -48 xv 0 loc_cstring2 0 \"$m_eou_press_button\" endif "), (level.intermission_server_frame + (5_sec).frames()));
 	} else if (level.match_state == MATCH_IN_PROGRESS) {
-		if (ent->client && ClientIsPlaying(ent->client) && ent->client->resp.score && level.num_playing_clients > 1) {
+		if (GT(GT_FREEZE)) {
+			fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yv -10 cstring2 \"Red: {} alive  Blue: {} alive\" "),
+				freeze[0].alive, freeze[1].alive);
+		} else if (ent->client && ClientIsPlaying(ent->client) && ent->client->resp.score && level.num_playing_clients > 1) {
 			fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yv -10 cstring2 \"{} place with a score of {}\" "),
 				G_PlaceString(ent->client->resp.rank + 1), ent->client->resp.score);
 		}
-		//if (fraglimit->integer && !(GTF(GTF_ROUNDS)))
-		//	fmt::format_to(std::back_inserter(string), FMT_STRING("xv -20 yv -10 loc_string2 1 $g_score_frags \"{}\" "), fraglimit->integer);
-		/*
-		else if (GT(GT_HORDE) && level.round_number > 0)
-			fmt::format_to(std::back_inserter(string), FMT_STRING("xv -20 yv -10 loc_string2 1 Wave: \"{}\" "), level.round_number);
-			*/
-		if (timelimit->value && !level.intermission_time) {
-			//fmt::format_to(std::back_inserter(string), FMT_STRING("xv 340 yv -10 time_limit {} "), gi.ServerFrame() + ((gtime_t::from_min(timelimit->value) - level.time)).milliseconds() / gi.frame_time_ms);
-#if 0
-		//fmt::format_to(std::back_inserter(string), FMT_STRING("xv 340 yv -10 loc_string2 1 {} "), gi.ServerFrame() + level.time.milliseconds() / gi.frame_time_ms);
-			int32_t val = gi.ServerFrame() + ((gtime_t::from_min(timelimit->value) - level.time)).milliseconds() / gi.frame_time_ms;
-			const char *s;
-			int32_t remaining_ms = gtime_t::from_ms(level.time);	// (val - gi.ServerFrame()) *gi.frame_time_ms;
 
-			s = G_Fmt("{:02}:{:02}", (remaining_ms / 1000) / 60, (remaining_ms / 1000) % 60).data();
-
-			fmt::format_to(std::back_inserter(string), FMT_STRING("xv 340 yv -10 loc_string2 1 \"{}\" "), s);
-#endif
-		}
-
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Use inventory bind to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
 	}
 
 	if (GT(GT_CTF)) {
@@ -553,7 +539,7 @@ static void DuelScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 			fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yv -10 cstring2 \"{} place with a score of {}\" "),
 				G_PlaceString(ent->client->resp.rank + 1), ent->client->resp.score);
 		}
-		//fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Use inventory bind to toggle menu.");
+		//fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
 	}
 
 	gclient_t *cl = nullptr;
@@ -730,7 +716,7 @@ static void DuelScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 	if (level.intermission_time)
 		fmt::format_to(std::back_inserter(string), FMT_STRING("ifgef {} yb -48 xv 0 loc_cstring2 0 \"$m_eou_press_button\" endif "), (level.intermission_server_frame + (5_sec).frames()));
 	else
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Show inventory to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
 
 	gi.WriteByte(svc_layout);
 	gi.WriteString(string.c_str());
@@ -776,7 +762,7 @@ static inline void ScoreboardNotice(gentity_t *ent, std::string string) {
 #endif
 		}
 
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Use inventory bind to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
 	}
 }
 
@@ -896,7 +882,7 @@ void DeathmatchScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 #endif
 		}
 
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Use inventory bind to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
 	}
 
 	gi.WriteByte(svc_layout);
