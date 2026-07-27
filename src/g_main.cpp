@@ -10,8 +10,8 @@
 CHECK_GCLIENT_INTEGRITY;
 CHECK_ENTITY_INTEGRITY;
 
-constexpr int32_t DEFAULT_GRAPPLE_SPEED = 970; // speed of grapple in flight
-constexpr float	  DEFAULT_GRAPPLE_PULL_SPEED = 400; // speed player is pulled at
+constexpr int32_t DEFAULT_GRAPPLE_SPEED = 1200; // speed of grapple in flight
+constexpr float	  DEFAULT_GRAPPLE_PULL_SPEED = 520; // speed player is pulled at
 
 std::mt19937 mt_rand;
 
@@ -150,6 +150,7 @@ cvar_t *g_friendly_fire;
 cvar_t *g_frozen_time;
 cvar_t *g_grapple_damage;
 cvar_t *g_grapple_fly_speed;
+cvar_t *g_grapple_max_length;
 cvar_t *g_grapple_offhand;
 cvar_t *g_grapple_pull_speed;
 cvar_t *g_gravity;
@@ -985,6 +986,7 @@ static void InitGame() {
 	g_allow_kill = gi.cvar("g_allow_kill", "1", CVAR_NOFLAGS);
 	g_grapple_offhand = gi.cvar("g_grapple_offhand", "0", CVAR_NOFLAGS);
 	g_grapple_fly_speed = gi.cvar("g_grapple_fly_speed", G_Fmt("{}", DEFAULT_GRAPPLE_SPEED).data(), CVAR_LATCH);
+	g_grapple_max_length = gi.cvar("g_grapple_max_length", "1024", CVAR_NOFLAGS);
 	g_grapple_pull_speed = gi.cvar("g_grapple_pull_speed", G_Fmt("{}", DEFAULT_GRAPPLE_PULL_SPEED).data(), CVAR_LATCH);
 	g_grapple_damage = gi.cvar("g_grapple_damage", "10", CVAR_LATCH);
 
@@ -1442,8 +1444,7 @@ static void Entities_Reset(bool reset_players, bool reset_ghost, bool reset_scor
 				continue;
 
 			if (ent->spawnflags.has(SPAWNFLAG_ITEM_DROPPED | SPAWNFLAG_ITEM_DROPPED_PLAYER)) {
-				//G_FreeEntity(ent);
-				ent->nextthink = level.time;
+				G_FreeEntity(ent);
 			} else {
 				// powerups don't spawn in for a while
 				if (ent->item->flags & IF_POWERUP) {
@@ -3700,6 +3701,11 @@ void BeginIntermission(gentity_t *targ) {
 
 	// respawn any dead clients
 	for (auto ec : active_clients()) {
+		// Free any lingering frozen_body_ghost before ClientRespawn — otherwise
+		// the SOLID_BBOX ghost can survive into intermission and get crushed by
+		// movers (e.g. Q2DM1 main elevator), producing stray explosions.
+		if (GT(GT_FREEZE) && ec->client->frozen_body)
+			RemoveFrozenBodyGhost(ec);
 		if (ec->health <= 0 || ec->client->eliminated) {
 			ec->health = 1;
 			// give us our max health back since it will reset

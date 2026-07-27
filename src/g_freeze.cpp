@@ -33,6 +33,20 @@ static constexpr int thaw_help = bit_v<0>;
 // ============================================================
 
 void freezeSpawn() {
+	// Clear any frozen state carried over from warmup
+	for (auto ec : active_clients()) {
+		if (ec->client->frozen) {
+			ec->client->frozen = false;
+			ec->client->frozen_time = 0_ms;
+			ec->client->resp.thawer = nullptr;
+			ec->client->freeze_chase_mode = 0;
+			RemoveFrozenBodyGhost(ec);
+		}
+		ec->client->bot_thaw_target = nullptr;
+		ec->client->bot_hook_state = 0;
+		ec->client->bot_hook_time = 0_ms;
+	}
+
 	freeze[0] = freeze[1] = freeze_team_t{};
 	for (int i = 0; i < 2; i++) {
 		freeze[i].update = true;
@@ -129,50 +143,8 @@ bool freezeCheck(gentity_t *ent, mod_t mod) {
 
 void freezeAnim(gentity_t *ent) {
 	ent->client->anim_priority = ANIM_DEATH;
-	if (ent->client->ps.pmove.pm_flags & PMF_DUCKED) {
-		if (rand() & 1) {
-			ent->s.frame = FRAME_crpain1 - 1;
-			ent->client->anim_end = FRAME_crpain1 + rand() % 4;
-		} else {
-			ent->s.frame = FRAME_crdeath1 - 1;
-			ent->client->anim_end = FRAME_crdeath1 + rand() % 5;
-		}
-	} else {
-		switch (rand() % 8) {
-		case 0:
-			ent->s.frame = FRAME_run1 - 1;
-			ent->client->anim_end = FRAME_run1 + rand() % 6;
-			break;
-		case 1:
-			ent->s.frame = FRAME_pain101 - 1;
-			ent->client->anim_end = FRAME_pain101 + rand() % 4;
-			break;
-		case 2:
-			ent->s.frame = FRAME_pain201 - 1;
-			ent->client->anim_end = FRAME_pain201 + rand() % 4;
-			break;
-		case 3:
-			ent->s.frame = FRAME_pain301 - 1;
-			ent->client->anim_end = FRAME_pain301 + rand() % 4;
-			break;
-		case 4:
-			ent->s.frame = FRAME_jump1 - 1;
-			ent->client->anim_end = FRAME_jump1 + rand() % 6;
-			break;
-		case 5:
-			ent->s.frame = FRAME_death101 - 1;
-			ent->client->anim_end = FRAME_death101 + rand() % 6;
-			break;
-		case 6:
-			ent->s.frame = FRAME_death201 - 1;
-			ent->client->anim_end = FRAME_death201 + rand() % 6;
-			break;
-		case 7:
-			ent->s.frame = FRAME_death301 - 1;
-			ent->client->anim_end = FRAME_death301 + rand() % 6;
-			break;
-		}
-	}
+	ent->s.frame = FRAME_stand01;
+	ent->client->anim_end = FRAME_stand01;
 
 	if (frandom() < 0.2f)
 		gi.sound(ent, CHAN_BODY, gi.soundindex("player/lava2.wav"), 1, ATTN_NORM, 0);
@@ -262,8 +234,9 @@ void playerThaw(gentity_t *ent) {
 		if (other->health <= 0) continue;
 		if (other->client->frozen) continue;
 		if (other->client->sess.team != ent->client->sess.team) continue;
-		// Respawn grace: players within 2 seconds of spawning can't steal a thaw.
-		// if (level.time < other->client->pers.last_spawn_time + 2_sec) continue;
+		// Spawn-protected players can't thaw — would be unfair, since they're damage-immune.
+		// Cleared when they fire a weapon or the off-hand hook.
+		if (other->client->pers.spawn_ghost_time > level.time) continue;
 
 		vec3_t eorg;
 		for (int j = 0; j < 3; j++)
@@ -289,7 +262,7 @@ void playerThaw(gentity_t *ent) {
 	ent->client->thaw_time = HOLD_FOREVER;
 }
 
-void playerBreak(gentity_t *ent, int force) {
+void playerBreak(gentity_t *ent, int force, bool in_place) {
 	/*freeze*/
 	// In chasecam modes, ent->s.origin is at the camera position (near the followed player).
 	// Snap back to the actual freeze spot so break effects spawn at the right location.
@@ -337,19 +310,31 @@ void playerBreak(gentity_t *ent, int force) {
 		int slot = (int)(ent - g_entities) - 1;
 		if (slot >= 0 && slot < (int)MAX_CLIENTS_KEX) {
 			if (!thaw_records[slot].round_end_break) {
-				thaw_records[slot].origin = ent->s.origin;
-				thaw_records[slot].in_place = true;
+				if (in_place) {
+					thaw_records[slot].origin = ent->s.origin;
+					thaw_records[slot].in_place = true;
+				}
 			}
 			thaw_records[slot].round_end_break = false;
 		}
 	}
 	/*freeze*/
 	RemoveFrozenBodyGhost(ent);
+	if (ent->client->bot_thaw_target) {
+		gentity_t *bot = ent->client->bot_thaw_target;
+		if (bot->client->bot_hook_state != 0) {
+			Weapon_Grapple_DoReset(bot->client);
+			bot->client->bot_hook_state = 0;
+		}
+		bot->client->bot_thaw_target = nullptr;
+		ent->client->bot_thaw_target = nullptr;
+	}
 	ent->svflags &= ~SVF_NOCLIENT;
 }
 
 void playerUnfreeze(gentity_t *ent) {
 	if (level.time > ent->client->frozen_time && level.time > ent->client->respawn_time) {
+		// Timer expired without a rescuer — respawn at a map spawn point, not the freeze location.
 		playerBreak(ent, 50);
 		return;
 	}
@@ -390,7 +375,7 @@ void playerUnfreeze(gentity_t *ent) {
 				gi.LocBroadcast_Print(PRINT_HIGH, "{} evicts {} from their igloo.\n",
 					thawer->client->resp.netname, ent->client->resp.netname);
 			thawer->client->pers.thaw_protect_time = level.time + 2_sec;
-			playerBreak(ent, 100);
+			playerBreak(ent, 100, /*in_place=*/true);
 		}
 	}
 }
@@ -421,6 +406,220 @@ void playerMove(gentity_t *ent) {
 	}
 }
 
+// Called from freezeMain for a frozen player: assigns the nearest available bot teammate to rescue them.
+static void playerBotHelper(gentity_t *ent) {
+	if (ent->client->bot_thaw_target) {
+		gentity_t *bot = ent->client->bot_thaw_target;
+		if (bot->inuse && bot->health > 0 && !bot->client->frozen)
+			return; // existing assignment still valid
+		// Bot gone or also frozen - clear both sides
+		bot->client->bot_thaw_target = nullptr;
+		ent->client->bot_thaw_target = nullptr;
+	}
+
+	gentity_t *best = nullptr;
+	float best_dist = std::numeric_limits<float>::max();
+	for (uint32_t i = 0; i < (uint32_t)game.maxclients; i++) {
+		gentity_t *other = g_entities + 1 + i;
+		if (!other->inuse) continue;
+		if (!(other->svflags & SVF_BOT)) continue;
+		if (other->client->resp.spectator) continue;
+		if (other->health <= 0) continue;
+		if (other->client->frozen) continue;
+		if (other->client->sess.team != ent->client->sess.team) continue;
+		if (other->client->bot_thaw_target) continue; // already assigned to another frozen player
+		float dist = (ent->s.origin - other->s.origin).length();
+		if (dist < best_dist) {
+			best_dist = dist;
+			best = other;
+		}
+	}
+	if (best) {
+		ent->client->bot_thaw_target = best;
+		best->client->bot_thaw_target = ent;
+	}
+}
+
+// Compute v_angle (pitch, yaw, roll) to look from eye toward target using Q2 convention:
+// positive pitch = looking down, negative pitch = looking up.
+// vectoangles() uses the opposite pitch sign — do NOT use it for v_angle.
+static vec3_t BotAimAngles(const vec3_t &eye, const vec3_t &target) {
+	vec3_t d = target - eye;
+	float yaw = atan2f(d[1], d[0]) * (180.f / PIf);
+	if (yaw < 0.f) yaw += 360.f;
+	float horiz = sqrtf(d[0]*d[0] + d[1]*d[1]);
+	float pitch = -atan2f(d[2], horiz) * (180.f / PIf);
+	return { pitch, yaw, 0.f };
+}
+
+static bool BotCanSeeGhost(const gentity_t *bot, const gentity_t *ghost) {
+	vec3_t eye = bot->s.origin + vec3_t{0, 0, (float)bot->viewheight};
+	trace_t tr = gi.traceline(eye, ghost->s.origin, bot, MASK_SOLID);
+	return tr.fraction >= 0.97f;
+}
+
+// Called once per frame from Bot_UpdateDebug: fires the off-hand hook at a frozen teammate's ghost
+// to drag it within thaw range.
+// States: 0=idle, 1=stopping (aim settling, fire imminent), 2=pulling (hook out, retreat to drag).
+void freezeBotHook() {
+	if (level.intermission_time) return;
+	if (!GT(GT_FREEZE)) return;
+
+	for (uint32_t i = 0; i < (uint32_t)game.maxclients; i++) {
+		gentity_t *bot = g_entities + 1 + i;
+		if (!bot->inuse) continue;
+		if (!(bot->svflags & SVF_BOT)) continue;
+		if (bot->client->resp.spectator) continue;
+		if (bot->health <= 0) continue;
+		if (bot->client->frozen) continue;
+
+		int &hook_state = bot->client->bot_hook_state;
+
+		if (hook_state == 0) {
+			// cooldown check
+			if (bot->client->bot_hook_time > level.time) continue;
+			if (!bot->client->bot_thaw_target) continue;
+			if (bot->client->grapple_ent) continue;
+
+			gentity_t *target = bot->client->bot_thaw_target;
+			gentity_t *ghost = target->client->frozen_body;
+			if (!ghost || !ghost->inuse) continue;
+			if (ghost->enemy) continue; // another hook already latched
+
+			float dist = (ghost->s.origin - bot->s.origin).length();
+			float max_range = (g_grapple_max_length->value > 0)
+				? g_grapple_max_length->value * 0.85f
+				: 870.0f;
+			if (dist < 100.0f || dist > max_range) continue;
+			if (!BotCanSeeGhost(bot, ghost)) continue;
+
+			// Stop moving and lock aim; fire after brief settle
+			gi.Bot_MoveToPoint(bot, bot->s.origin, 8);
+			vec3_t aim_pos = ghost->s.origin + vec3_t{0, 0, 16};
+			vec3_t eye = bot->s.origin + vec3_t{0, 0, (float)bot->viewheight};
+			bot->client->v_angle = BotAimAngles(eye, aim_pos);
+			bot->client->bot_hook_time = level.time + 250_ms;
+			hook_state = 1;
+
+		} else if (hook_state == 1) {
+			if (!bot->client->bot_thaw_target) { hook_state = 0; continue; }
+			gentity_t *target = bot->client->bot_thaw_target;
+			gentity_t *ghost = target->client->frozen_body;
+			if (!ghost || !ghost->inuse || !target->client->frozen) {
+				hook_state = 0;
+				continue;
+			}
+			if (ghost->enemy) {
+				// another bot got there first
+				hook_state = 0;
+				bot->client->bot_hook_time = level.time + 500_ms;
+				continue;
+			}
+
+			// Hold still and keep aim updated while settling
+			gi.Bot_MoveToPoint(bot, bot->s.origin, 8);
+			vec3_t aim_pos = ghost->s.origin + vec3_t{0, 0, 16};
+			vec3_t eye = bot->s.origin + vec3_t{0, 0, (float)bot->viewheight};
+			bot->client->v_angle = BotAimAngles(eye, aim_pos);
+
+			if (level.time < bot->client->bot_hook_time) continue; // still settling
+
+			Weapon_Hook(bot);
+			if (bot->client->grapple_ent) {
+				hook_state = 2;
+				bot->client->bot_hook_time = level.time + 2_sec; // hard timeout
+			} else {
+				hook_state = 0;
+				bot->client->bot_hook_time = level.time + 2_sec;
+			}
+
+		} else if (hook_state == 2) {
+			if (!bot->client->grapple_ent) {
+				// hook missed or released
+				hook_state = 0;
+				bot->client->bot_hook_time = level.time + 1_sec;
+				continue;
+			}
+			// 2-second hard timeout — release if stuck on a wall or missed the ghost
+			if (level.time >= bot->client->bot_hook_time) {
+				Weapon_Grapple_DoReset(bot->client);
+				hook_state = 0;
+				bot->client->bot_hook_time = level.time + 1_sec;
+				continue;
+			}
+			if (!bot->client->bot_thaw_target || !bot->client->bot_thaw_target->client->frozen) {
+				Weapon_Grapple_DoReset(bot->client);
+				hook_state = 0;
+				continue;
+			}
+			gentity_t *ghost = bot->client->bot_thaw_target->client->frozen_body;
+			if (!ghost) { Weapon_Grapple_DoReset(bot->client); hook_state = 0; continue; }
+
+			float dist = (ghost->s.origin - bot->s.origin).length();
+			if (dist <= MELEE_DISTANCE + 32) {
+				// close enough — release and let playerThaw finish
+				Weapon_Grapple_DoReset(bot->client);
+				hook_state = 0;
+				continue;
+			}
+
+			// Hook latched: retreat away from ghost to actively drag it toward the bot
+			if (bot->client->grapple_state == GRAPPLE_STATE_PULL) {
+				vec3_t away = (bot->s.origin - ghost->s.origin).normalized();
+				vec3_t retreat = bot->s.origin + away * 250;
+				gi.Bot_MoveToPoint(bot, retreat, 16);
+			}
+		}
+	}
+}
+
+// Called once per frame from Bot_UpdateDebug: steers assigned bots toward their rescue targets.
+void freezeBotHelper() {
+	if (level.intermission_time)
+		return;
+	if (!GT(GT_FREEZE))
+		return;
+
+	for (uint32_t i = 0; i < (uint32_t)game.maxclients; i++) {
+		gentity_t *bot = g_entities + 1 + i;
+		if (!bot->inuse) continue;
+		if (!(bot->svflags & SVF_BOT)) continue;
+		if (bot->client->resp.spectator) continue;
+		if (bot->health <= 0) continue;
+		if (bot->client->frozen) continue;
+		if (bot->client->bot_hook_state != 0) continue; // hook rescue owns movement
+		if (!bot->client->bot_thaw_target) continue;
+
+		gentity_t *target = bot->client->bot_thaw_target;
+		if (!target->inuse || !target->client->frozen) {
+			target->client->bot_thaw_target = nullptr;
+			bot->client->bot_thaw_target = nullptr;
+			continue;
+		}
+
+		// Drop combat focus so the bot prioritizes reaching the frozen teammate
+		bot->enemy = nullptr;
+
+		if (target->client->resp.thawer == bot) {
+			// In thaw range — kill velocity and hold position so the timer doesn't reset
+			bot->velocity = vec3_origin;
+			gi.Bot_MoveToPoint(bot, bot->s.origin, 8);
+			// Crouch while actively thawing
+			bot->client->ps.pmove.pm_flags |= PMF_DUCKED;
+			bot->maxs[2] = 4;
+			bot->viewheight = -2;
+			bot->client->ps.pmove.viewheight = -2;
+			gi.linkentity(bot);
+		} else {
+			// Navigate toward the frozen body position
+			vec3_t dest = target->client->frozen_body
+				? target->client->frozen_body->s.origin
+				: target->s.origin;
+			gi.Bot_MoveToPoint(bot, dest, MELEE_DISTANCE);
+		}
+	}
+}
+
 void freezeMain(gentity_t *ent) {
 	if (!ent->inuse)
 		return;
@@ -431,6 +630,7 @@ void freezeMain(gentity_t *ent) {
 		// Bots auto-moan; human players moan on fire press (handled in the fire handler).
 		if (ent->svflags & SVF_BOT)
 			cmdMoan(ent);
+		playerBotHelper(ent);
 		playerThaw(ent);
 		playerUnfreeze(ent);
 		freezeEffects(ent);
@@ -467,9 +667,10 @@ static THINK(FrozenBodyGhostThink) (gentity_t *ghost) -> void {
 		return;
 	}
 
-	// Detect crush: bounding box overlapping solid world geometry
+	// Detect crush: bounding box overlapping solid world geometry.
+	// Skip while being dragged — transient geometry overlap during drag is expected.
 	trace_t tr = gi.trace(ghost->s.origin, ghost->mins, ghost->maxs, ghost->s.origin, ghost, MASK_SOLID);
-	if (tr.startsolid) {
+	if (tr.startsolid && !ghost->enemy) {
 		if (ghost->timestamp == 0_ms)
 			ghost->timestamp = level.time;
 		else if (level.time - ghost->timestamp > 3_sec)
@@ -511,7 +712,11 @@ void UpdateFrozenBodyGhost(gentity_t *ent) {
 	if (!ent->client->frozen_body)
 		return;
 	gentity_t *ghost = ent->client->frozen_body;
-	ghost->s.origin   = ent->s.origin;
+	// while being dragged, drag code moves the ghost and fplayer must follow
+	if (ghost->enemy)
+		ent->s.origin = ghost->s.origin;
+	else
+		ghost->s.origin = ent->s.origin;
 	ghost->s.angles   = ent->s.angles;
 	ghost->s.frame    = ent->s.frame;
 	ghost->s.skinnum  = ent->s.skinnum;
@@ -614,6 +819,16 @@ void breakTeam(int team) {
 		}
 	}
 	freeze[team].break_time = break_time + 1_sec;
+
+	// remove all dropped items so nobody carries weapons across rounds
+	for (uint32_t i = 1; i < (uint32_t)globals.num_entities; i++) {
+		gentity_t *it = g_entities + i;
+		if (!it->inuse || !it->item)
+			continue;
+		if (it->spawnflags.has(SPAWNFLAG_ITEM_DROPPED | SPAWNFLAG_ITEM_DROPPED_PLAYER))
+			G_FreeEntity(it);
+	}
+
 	if (rand() & 1)
 		gi.LocBroadcast_Print(PRINT_HIGH, "{} team was run circles around by their foe.\n", freeze_team_name[team]);
 	else

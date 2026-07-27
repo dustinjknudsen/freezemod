@@ -2,6 +2,7 @@
 // Licensed under the GNU General Public License 2.0.
 
 #include "../g_local.h"
+#include "../g_freeze.h"
 #include "bot_utils.h"
 #include "bot_debug.h"
 
@@ -159,6 +160,9 @@ Bot_UpdateDebug
 ================
 */
 void Bot_UpdateDebug() {
+	freezeBotHelper();
+	freezeBotHook();
+
 	if (!g_cheats->integer)
 		return;
 

@@ -2060,7 +2060,7 @@ static void G_InitStatusbar() {
 		}
 
 		// countdown
-		sb.ifstat(STAT_COUNTDOWN).xv(136).yb(-256).num(3, STAT_COUNTDOWN).endifstat();
+		sb.ifstat(STAT_COUNTDOWN).xv(123).yb(-256).num(3, STAT_COUNTDOWN).endifstat();
 
 		// match state/timer
 		sb.ifstat(STAT_MATCH_STATE).xv(0).yb(-78).stat_string(STAT_MATCH_STATE).endifstat();
@@ -2079,7 +2079,7 @@ static void G_InitStatusbar() {
 		sb.ifstat(STAT_MINISCORE_SECOND_PIC).xr(-26).yb(-83).pic(STAT_MINISCORE_SECOND_PIC).xr(-78).num(3, STAT_MINISCORE_SECOND_SCORE).ifstat(STAT_MINISCORE_SECOND_VAL).xr(-24).yb(-68).stat_string(STAT_MINISCORE_SECOND_VAL).endifstat().endifstat();
 		sb.ifstat(STAT_MINISCORE_SECOND_POS).xr(-28).yb(-85).pic(STAT_MINISCORE_SECOND_POS).endifstat();
 		// score limit
-		sb.ifstat(STAT_MINISCORE_FIRST_PIC).xr(-28).yb(-57).stat_string(STAT_SCORELIMIT).endifstat();
+		sb.ifstat(STAT_MINISCORE_FIRST_PIC).xr(-130).yb(-57).stat_string(STAT_SCORELIMIT).endifstat();
 
 		// crosshair id
 		sb.ifstat(STAT_CROSSHAIR_ID_VIEW).xv(122).yb(-128).stat_pname(STAT_CROSSHAIR_ID_VIEW).endifstat();	//112 -58

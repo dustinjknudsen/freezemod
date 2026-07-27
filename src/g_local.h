@@ -2482,6 +2482,7 @@ extern cvar_t *g_friendly_fire;
 extern cvar_t *g_frozen_time;
 extern cvar_t *g_grapple_damage;
 extern cvar_t *g_grapple_fly_speed;
+extern cvar_t *g_grapple_max_length;
 extern cvar_t *g_grapple_offhand;
 extern cvar_t *g_grapple_pull_speed;
 extern cvar_t *g_gravity;
@@ -3795,6 +3796,9 @@ struct gclient_t {
 	gtime_t		moan_time;
 	bool		frozen;
 	uint8_t		freeze_chase_mode; // 0=deathcam, 1=first-person, 2=third-person
+	gentity_t	*bot_thaw_target;  // bot: frozen teammate to rescue; frozen player: bot assigned to rescue them
+	int			bot_hook_state;    // 0=idle, 1=stopping/aiming, 2=pulling frozen ghost with hook
+	gtime_t		bot_hook_time;     // cooldown: don't re-fire hook before this time
 /*freeze*/
 
 	bool		ready_to_exit;

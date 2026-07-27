@@ -847,8 +847,7 @@ static void G_SetClientEffects(gentity_t *ent) {
 			float x = (ent->client->invisibility_fade_time - level.time).seconds() / INVISIBILITY_TIME.seconds();
 			ent->s.alpha = std::clamp(x, 0.05f, 0.2f);
 		}
-	} else if (ent->client->pers.spawn_ghost_time > level.time ||
-	           ent->client->pers.thaw_protect_time > level.time) {
+	} else if (ent->client->pers.spawn_ghost_time > level.time) {
 		ent->s.alpha = 0.5f;
 	}
 }
@@ -952,7 +951,7 @@ static void G_SetClientSound(gentity_t *ent) {
 	}
 
 	// [Paril-KEX] if no other sound is playing, play appropriate grapple sounds
-	if (!ent->s.sound && ent->client->grapple_ent) {
+	if (!ent->s.sound && ent->client->grapple_ent && g_gametype->integer != (int)GT_FREEZE) {
 		if (ent->client->grapple_state == GRAPPLE_STATE_PULL)
 			ent->s.sound = gi.soundindex("weapons/grapple/grpull.wav");
 		else if (ent->client->grapple_state == GRAPPLE_STATE_FLY)
@@ -1289,12 +1288,23 @@ void ClientEndServerFrame(gentity_t *ent) {
 	current_client = e->client;
 
 	if (deathmatch->integer) {
-		int limit = GT_ScoreLimit();
-		auto lim_str = G_Fmt("Score Limit: {}", limit);
-		const char *new_str = limit ? lim_str.data() : "";
-		if (!ent->client->ps.stats[STAT_SCORELIMIT] || strcmp(gi.get_configstring(CONFIG_STORY_SCORELIMIT), new_str)) {
-			ent->client->ps.stats[STAT_SCORELIMIT] = CONFIG_STORY_SCORELIMIT;
-			gi.configstring(CONFIG_STORY_SCORELIMIT, new_str);
+		if (GT(GT_FREEZE)) {
+			gi.configstring(CONFIG_TEAM_REMAINING_RED,  G_Fmt("Team Remaining: {}", freeze[0].alive).data());
+			gi.configstring(CONFIG_TEAM_REMAINING_BLUE, G_Fmt("Team Remaining: {}", freeze[1].alive).data());
+			if (ent->client->sess.team == TEAM_RED)
+				ent->client->ps.stats[STAT_SCORELIMIT] = CONFIG_TEAM_REMAINING_RED;
+			else if (ent->client->sess.team == TEAM_BLUE)
+				ent->client->ps.stats[STAT_SCORELIMIT] = CONFIG_TEAM_REMAINING_BLUE;
+			else
+				ent->client->ps.stats[STAT_SCORELIMIT] = 0;
+		} else {
+			int limit = GT_ScoreLimit();
+			auto lim_str = G_Fmt("Score Limit: {}", limit);
+			const char *new_str = limit ? lim_str.data() : "";
+			if (!ent->client->ps.stats[STAT_SCORELIMIT] || strcmp(gi.get_configstring(CONFIG_STORY_SCORELIMIT), new_str)) {
+				ent->client->ps.stats[STAT_SCORELIMIT] = CONFIG_STORY_SCORELIMIT;
+				gi.configstring(CONFIG_STORY_SCORELIMIT, new_str);
+			}
 		}
 	}
 

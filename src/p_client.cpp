@@ -724,7 +724,7 @@ static void ClientObituary(gentity_t *self, gentity_t *inflictor, gentity_t *att
 				}
 			}
 			if (attacker->client->sess.pc.killbeep_num > 0 && attacker->client->sess.pc.killbeep_num < 5) {
-				const char *sb[5] = { "", "nav_editor/select_node.wav", "misc/comp_up.wav", "insane/insane7.wav", "nav_editor/finish_node_move.wav" };
+				const char *sb[5] = { "", "mutant/mutatck2.wav", "misc/comp_up.wav", "insane/insane7.wav", "nav_editor/finish_node_move.wav" };
 				gi.local_sound(attacker, CHAN_AUTO, gi.soundindex(sb[attacker->client->sess.pc.killbeep_num]), 1, ATTN_NONE, 0);
 			}
 		}
@@ -752,6 +752,10 @@ static void TossClientItems(gentity_t *self) {
 
 	// don't drop anything when combat is disabled
 	if (IsCombatDisabled())
+		return;
+
+	// no auto-drop in freeze tag (prevents ghost weapons from gibs)
+	if (GT(GT_FREEZE))
 		return;
 
 	gitem_t *wp;
@@ -1193,9 +1197,12 @@ DIE(player_die) (gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int
 				// Set a short initial timer for lava/slime deaths. The engine stops updating
 				// watertype for stationary SOLID_NOT entities, so the per-frame clamp in
 				// playerUnfreeze can't fire for the "died in lava" case.
+				// Target total time = frozen_time + playerBreak's 1s respawn_time:
+				//   lava:  0s + 1s = ~1s total
+				//   slime: 2s + 1s = ~3s total
 				switch (mod.id) {
-				case MOD_LAVA:  self->client->frozen_time = level.time + 1_sec;  break;
-				case MOD_SLIME: self->client->frozen_time = level.time + 3_sec;  break;
+				case MOD_LAVA:  self->client->frozen_time = level.time;           break;
+				case MOD_SLIME: self->client->frozen_time = level.time + 2_sec;   break;
 				default: break;
 				}
 				/*freeze*/
@@ -4299,15 +4306,20 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 	client->cmd = *ucmd;
 
 	// Freeze tag off-hand grapple hook: BUTTON_HOLSTER hold-to-hook
-	if (GT(GT_FREEZE) && ClientIsPlaying(client) && !client->eliminated && !ent->deadflag && !client->frozen) {
+	if (GT(GT_FREEZE) && !level.intermission_time && ClientIsPlaying(client) && !client->eliminated && !ent->deadflag && !client->frozen) {
 		bool hold = (client->buttons & BUTTON_HOLSTER);
 		bool newly_pressed = (client->latched_buttons & BUTTON_HOLSTER);
 		if (newly_pressed && !client->grapple_ent)
 			Weapon_Hook(ent);
-		else if (!hold && client->grapple_ent)
+		else if (!hold && client->grapple_ent && (!(ent->svflags & SVF_BOT) || client->bot_hook_state == 0))
 			Weapon_Grapple_DoReset(client);
 		if (client->grapple_ent || newly_pressed)
 			client->latched_buttons &= ~BUTTON_HOLSTER;
+	}
+	// hook active: prevent BUTTON_HOLSTER from reaching the weapon state machine this frame
+	if (GT(GT_FREEZE) && client->grapple_ent) {
+		client->buttons &= ~BUTTON_HOLSTER;
+		client->latched_buttons &= ~BUTTON_HOLSTER;
 	}
 
 	if (!client->initial_menu_shown && client->initial_menu_delay && level.time > client->initial_menu_delay) {
@@ -4441,10 +4453,19 @@ void ClientThink(gentity_t *ent, usercmd_t *ucmd) {
 			client->ps.pmove.pm_type = PM_NOCLIP;
 		} else if (ent->s.modelindex != MODELINDEX_PLAYER)
 			client->ps.pmove.pm_type = PM_GIB;
-		else if (ent->deadflag)
-			client->ps.pmove.pm_type = PM_DEAD;
-		else if (ent->client->grapple_state >= GRAPPLE_STATE_PULL)
-			client->ps.pmove.pm_type = PM_GRAPPLE;
+		else if (ent->deadflag) {
+			// while drag is active (ghost->enemy is set to the hook), drag code owns the position —
+			// use PM_FREEZE so Pmove doesn't fight it
+			gentity_t *ghost = ent->client->frozen_body;
+			bool being_dragged = ghost && ghost->enemy && ghost->enemy->inuse;
+			client->ps.pmove.pm_type = being_dragged ? PM_FREEZE : PM_DEAD;
+		}
+		else if (ent->client->grapple_state >= GRAPPLE_STATE_PULL) {
+			gentity_t *hook = ent->client->grapple_ent;
+			bool drag_mode = hook && hook->enemy && strcmp(hook->enemy->classname, "frozen_body_ghost") == 0;
+			if (!drag_mode)
+				client->ps.pmove.pm_type = PM_GRAPPLE;
+		}
 		else
 			client->ps.pmove.pm_type = PM_NORMAL;
 

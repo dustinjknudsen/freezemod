@@ -1635,7 +1635,12 @@ static void Weapon_Grapple_Reset(gentity_t *self) {
 	if (!self || !self->owner->client || !self->owner->client->grapple_ent)
 		return;
 
-	gi.sound(self->owner, CHAN_AUX, gi.soundindex("medic/medatck5.wav"), 1.0f, ATTN_NORM, 0);
+	gi.sound(self->owner, CHAN_AUX, gi.soundindex("parasite/paratck4.wav"), 1.0f, ATTN_NORM, 0);
+
+	// clear the drag signal on the ghost so it stops being treated as dragged
+	if (self->enemy && self->enemy->inuse &&
+		strcmp(self->enemy->classname, "frozen_body_ghost") == 0)
+		self->enemy->enemy = nullptr;
 
 	gclient_t *cl;
 	cl = self->owner->client;
@@ -1677,20 +1682,30 @@ static TOUCH(Weapon_Grapple_Touch) (gentity_t *self, gentity_t *other, const tra
 	}
 
 	self->owner->client->grapple_state = GRAPPLE_STATE_PULL;
-	{
-		vec3_t start, dir;
-		P_ProjectSource(self->owner, self->owner->client->v_angle, { 7, 2, -9 }, start, dir);
-		self->angle = (self->s.origin - start).length();
+	self->angle = (self->s.origin - self->owner->s.origin).length();
+	if (strcmp(other->classname, "frozen_body_ghost") != 0) {
+		// normal wall hook: pull owner toward anchor
+		vec3_t eye = self->owner->s.origin + vec3_t{ 0, 0, (float)self->owner->viewheight };
+		vec3_t iv = (self->s.origin - eye).normalized();
+		self->owner->velocity = iv * g_grapple_pull_speed->value;
 	}
 	self->enemy = other;
+	if (strcmp(other->classname, "frozen_body_ghost") == 0) {
+		other->velocity = {};
+		other->enemy = self; // hook entity — signals being dragged to rest of code
+	}
 
 	self->solid = SOLID_NOT;
 
 	if (self->owner->client->silencer_shots)
 		volume = 0.2f;
 
-	gi.sound(self, CHAN_WEAPON, gi.soundindex("weapons/grapple/grhit.wav"), volume, ATTN_NORM, 0);
-	self->s.sound = gi.soundindex("weapons/grapple/grpull.wav");
+	if (strcmp(other->classname, "frozen_body_ghost") == 0)
+		gi.sound(other, CHAN_BODY, gi.soundindex("shambler/smack.wav"), volume, ATTN_NORM, 0);
+	else
+		gi.sound(self, CHAN_WEAPON, gi.soundindex("weapons/grapple/grhit.wav"), volume, ATTN_NORM, 0);
+	if (g_gametype->integer != (int)GT_FREEZE)
+		self->s.sound = gi.soundindex("weapons/grapple/grpull.wav");
 
 	gi.WriteByte(svc_temp_entity);
 	gi.WriteByte(TE_SPARKS);
@@ -1746,40 +1761,145 @@ void Weapon_Grapple_Pull(gentity_t *self) {
 		}
 	}
 
+	if (g_grapple_max_length->value > 0) {
+		float rope_len = (self->s.origin - self->owner->s.origin).length();
+		if (rope_len > g_grapple_max_length->value) {
+			Weapon_Grapple_Reset(self);
+			return;
+		}
+	}
+
 	Weapon_Grapple_DrawCable(self);
 
 	if (self->owner->client->grapple_state > GRAPPLE_STATE_FLY) {
-		// reel in rope toward anchor each frame
-		self->angle = max(0.f, self->angle - g_grapple_pull_speed->value * gi.frame_time_s);
-
-		vec3_t start, dir;
-		P_ProjectSource(self->owner, self->owner->client->v_angle, { 7, 2, -9 }, start, dir);
-
-		vec3_t chainvec = self->s.origin - start;
-		float chainlen = chainvec.length();
-		float force = 0;
-
-		if (chainlen > self->angle) {
-			vec3_t velpart = chainvec * (self->owner->velocity.dot(chainvec) / chainvec.dot(chainvec));
-			force = (chainlen - self->angle) * 5;
-			if (self->owner->velocity.dot(chainvec) < 0) {
-				// moving away from anchor: cancel outward velocity component
-				if (chainlen > self->angle + 25)
-					self->owner->velocity -= velpart;
-			} else {
-				// moving toward anchor: reduce corrective force by existing momentum
-				float vp_len = velpart.length();
-				if (vp_len < force)
-					force -= vp_len;
-				else
-					force = 0;
+		// drag mode: hook attached to frozen body — continuously pull body toward owner
+		if (self->enemy && strcmp(self->enemy->classname, "frozen_body_ghost") == 0) {
+			gentity_t *ghost = self->enemy;
+			gentity_t *fplayer = (gentity_t *)ghost->owner;
+			if (!fplayer || !fplayer->inuse || !fplayer->client || !fplayer->client->frozen) {
+				Weapon_Grapple_Reset(self);
+				return;
 			}
+			vec3_t to_owner = self->owner->s.origin - ghost->s.origin;
+			float dist = to_owner.length();
+			float lateral = vec3_t{ to_owner[0], to_owner[1], 0 }.length();
+			constexpr float DRAG_STOP_DIST = 96.f;
+			constexpr float dt = 0.1f;
+			constexpr float STEPSIZE = 18.f;
+
+			// block only when standing directly on top of the body
+			if (to_owner[2] > 0 && lateral < 48.f && dist < DRAG_STOP_DIST)
+				return;
+
+			trace_t gnd = gi.trace(ghost->s.origin, ghost->mins, ghost->maxs,
+				ghost->s.origin + vec3_t{0, 0, -2.f}, ghost, MASK_SOLID);
+			bool on_ground = gnd.fraction < 1.f;
+
+			// compute pull target first so gravity decision can reference rope direction
+			vec3_t target = {};
+			if (dist > DRAG_STOP_DIST) {
+				float pull = min((dist - DRAG_STOP_DIST) * 5.f, 150.f);
+				target = to_owner.normalized() * pull;
+			}
+
+			// gravity only applies when rope is slack — when taut the rope provides all
+			// force, so gravity must not stack (downward pull + gravity = instant drop)
+			if (on_ground)
+				ghost->velocity[2] = max(0.f, ghost->velocity[2]);
+			else if (dist <= DRAG_STOP_DIST)
+				ghost->velocity[2] -= 800.f * dt;
+
+			constexpr float blend = 0.18f;
+			ghost->velocity = ghost->velocity * (1.f - blend) + target * blend;
+
+			float spd = ghost->velocity.length();
+			if (spd > 500.f)
+				ghost->velocity *= 500.f / spd;
+
+			// use engine multi-bump slide for proper wall/corner handling
+			vec3_t start_o = ghost->s.origin;
+			vec3_t start_v = ghost->velocity;
+
+			G_FlyMove(ghost, dt, MASK_SOLID);
+			vec3_t flat_o = ghost->s.origin;
+			vec3_t flat_v = ghost->velocity;
+
+			if (on_ground) {
+				// only attempt step-up when the flat path was actually blocked —
+				// trying it unconditionally causes oscillation on flat ground because
+				// the two paths cover equal distance and the tie-break is arbitrary,
+				// sometimes leaving the ghost slightly elevated → airborne → gravity → bounce
+				float expected_h2 = (start_v[0] * start_v[0] + start_v[1] * start_v[1]) * dt * dt;
+				float flat_h2 = (flat_o[0] - start_o[0]) * (flat_o[0] - start_o[0]) +
+				                (flat_o[1] - start_o[1]) * (flat_o[1] - start_o[1]);
+				bool flat_blocked = expected_h2 > 1.f && flat_h2 < expected_h2 * 0.5f;
+
+				if (flat_blocked) {
+					ghost->s.origin = start_o;
+					ghost->velocity = start_v;
+
+					trace_t up_tr = gi.trace(start_o, ghost->mins, ghost->maxs,
+						start_o + vec3_t{0, 0, STEPSIZE}, ghost, MASK_SOLID);
+					if (!up_tr.allsolid) {
+						ghost->s.origin = up_tr.endpos;
+						float saved_vz = ghost->velocity[2];
+						ghost->velocity[2] = 0;
+						G_FlyMove(ghost, dt, MASK_SOLID);
+						ghost->velocity[2] = saved_vz;
+						trace_t dn_tr = gi.trace(ghost->s.origin, ghost->mins, ghost->maxs,
+							ghost->s.origin - vec3_t{0, 0, STEPSIZE}, ghost, MASK_SOLID);
+						if (dn_tr.fraction < 1.f && !dn_tr.allsolid)
+							ghost->s.origin = dn_tr.endpos;
+
+						float step_h2 = (ghost->s.origin[0] - start_o[0]) * (ghost->s.origin[0] - start_o[0]) +
+						                (ghost->s.origin[1] - start_o[1]) * (ghost->s.origin[1] - start_o[1]);
+						if (flat_h2 >= step_h2) {
+							ghost->s.origin = flat_o;
+							ghost->velocity = flat_v;
+						}
+					} else {
+						ghost->s.origin = flat_o;
+						ghost->velocity = flat_v;
+					}
+				}
+			}
+
+			fplayer->s.origin = ghost->s.origin;
+			gi.linkentity(ghost);
+			gi.linkentity(fplayer);
+			return;
 		}
 
-		chainvec.normalize();
-		self->owner->velocity += chainvec * force;
-		// cancel gravity accumulated this frame to prevent pendulum swing buildup while on rope
-		self->owner->velocity -= self->owner->gravityVector * (self->owner->gravity * level.gravity * gi.frame_time_s);
+		// wall-hook pull physics
+		vec3_t chainvec = (self->s.origin - self->owner->s.origin).normalized();
+		float chainlen = (self->s.origin - self->owner->s.origin).length();
+		float inward = self->owner->velocity.dot(chainvec);
+
+		// ratchet: rope rest length tracks minimum distance (prevents backward-key extension)
+		if (chainlen < self->angle)
+			self->angle = chainlen;
+
+		// inextensible rope: hard-cancel outward velocity
+		if (inward < 0 && chainlen >= self->angle) {
+			self->owner->velocity -= chainvec * inward;
+			inward = 0;
+		}
+
+		// continuous inward pull — maintains pull speed regardless of strafing
+		if (chainlen > 48.f) {
+			float target = g_grapple_pull_speed->value;
+			if (inward < target)
+				self->owner->velocity += chainvec * min(target - inward, 150.f);
+		}
+
+		// near anchor: quadratic tangential damping to stop overshoot slide along surface
+		if (chainlen < 128.f) {
+			float t = chainlen / 128.f;
+			float blend = t * t;
+			vec3_t tangential = self->owner->velocity - chainvec * inward;
+			self->owner->velocity = chainvec * inward + tangential * blend;
+		}
+
 		G_CheckVelocity(self->owner);
 	}
 }
@@ -1824,7 +1944,8 @@ static bool Weapon_Grapple_FireHook(gentity_t *self, const vec3_t &start, const 
 		return false;
 	}
 
-	grapple->s.sound = gi.soundindex("weapons/grapple/grfly.wav");
+	if (g_gametype->integer != (int)GT_FREEZE)
+		grapple->s.sound = gi.soundindex("weapons/grapple/grfly.wav");
 
 	return true;
 }
@@ -1913,6 +2034,8 @@ OFF-HAND HOOK
 static void Weapon_Hook_DoFire(gentity_t *ent, const vec3_t &g_offset, int damage, effects_t effect) {
 	if (ent->client->grapple_state > GRAPPLE_STATE_FLY)
 		return; // it's already out
+
+	ent->client->pers.spawn_ghost_time = 0_ms; // firing off-hand hook ends spawn protection
 
 	vec3_t start, dir;
 	P_ProjectSource(ent, ent->client->v_angle, vec3_t{ 24, 0, 0 } + g_offset, start, dir);

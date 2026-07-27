@@ -75,7 +75,13 @@ void MoveClientToIntermission(gentity_t *ent) {
 	ent->s.modelindex3 = 0;
 	ent->s.modelindex = 0;
 	ent->s.effects = EF_NONE;
+	ent->s.renderfx &= ~(RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE);
 	RemoveFrozenBodyGhost(ent);
+	if (GT(GT_FREEZE) && ent->client->frozen) {
+		ent->client->frozen = false;
+		ent->client->frozen_time = 0_ms;
+		ent->client->resp.thawer = nullptr;
+	}
 	ent->s.sound = 0;
 	ent->solid = SOLID_NOT;
 	ent->movetype = MOVETYPE_FREECAM;
@@ -346,7 +352,7 @@ void TeamsScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 				G_PlaceString(ent->client->resp.rank + 1), ent->client->resp.score);
 		}
 
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "'inven' toggles menu, '+holster' fires hook, 'leavechase' exits the chase cam");
 	}
 
 	if (GT(GT_CTF)) {
@@ -425,6 +431,8 @@ void TeamsScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 				string += entry;
 				last[0] = i;
 			}
+			if (GT(GT_FREEZE) && cl_ent->client->frozen)
+				fmt::format_to(std::back_inserter(string), FMT_STRING("xv -5 yv {} string2 \"(f)\""), ty);
 		}
 
 		// blue team on right
@@ -455,6 +463,8 @@ void TeamsScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 				string += entry;
 				last[1] = i;
 			}
+			if (GT(GT_FREEZE) && cl_ent->client->frozen)
+				fmt::format_to(std::back_inserter(string), FMT_STRING("xv 235 yv {} string2 \"(f)\" "), ty);
 		}
 	}
 
@@ -539,7 +549,7 @@ static void DuelScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 			fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yv -10 cstring2 \"{} place with a score of {}\" "),
 				G_PlaceString(ent->client->resp.rank + 1), ent->client->resp.score);
 		}
-		//fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
+		//fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "'inven' toggles menu, '+holster' fires hook, 'leavechase' exits the chase cam");
 	}
 
 	gclient_t *cl = nullptr;
@@ -716,7 +726,7 @@ static void DuelScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 	if (level.intermission_time)
 		fmt::format_to(std::back_inserter(string), FMT_STRING("ifgef {} yb -48 xv 0 loc_cstring2 0 \"$m_eou_press_button\" endif "), (level.intermission_server_frame + (5_sec).frames()));
 	else
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "'inven' toggles menu, '+holster' fires hook, 'leavechase' exits the chase cam");
 
 	gi.WriteByte(svc_layout);
 	gi.WriteString(string.c_str());
@@ -762,7 +772,7 @@ static inline void ScoreboardNotice(gentity_t *ent, std::string string) {
 #endif
 		}
 
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "'inven' toggles menu, '+holster' fires hook, 'leavechase' exits the chase cam");
 	}
 }
 
@@ -882,7 +892,7 @@ void DeathmatchScoreboardMessage(gentity_t *ent, gentity_t *killer) {
 #endif
 		}
 
-		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "Bind a key to 'inven' to toggle menu.");
+		fmt::format_to(std::back_inserter(string), FMT_STRING("xv 0 yb -48 cstring2 \"{}\" "), "'inven' toggles menu, '+holster' fires hook, 'leavechase' exits the chase cam");
 	}
 
 	gi.WriteByte(svc_layout);

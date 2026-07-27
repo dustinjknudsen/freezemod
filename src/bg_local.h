@@ -66,6 +66,9 @@ enum {
 
 	CONFIG_STORY_SCORELIMIT,	// this is also used for scorelimit display in dm
 
+	CONFIG_TEAM_REMAINING_RED,
+	CONFIG_TEAM_REMAINING_BLUE,
+
 	CONFIG_LAST
 };
 

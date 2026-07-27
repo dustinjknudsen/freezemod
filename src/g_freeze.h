@@ -35,7 +35,7 @@ bool playerDamage(gentity_t *targ, gentity_t *attacker, int damage, mod_t mod);
 // freeze state transitions
 void freezeAnim(gentity_t *ent);
 void playerThaw(gentity_t *ent);
-void playerBreak(gentity_t *ent, int force);
+void playerBreak(gentity_t *ent, int force, bool in_place = false);
 void playerUnfreeze(gentity_t *ent);
 void playerMove(gentity_t *ent);
 
@@ -60,5 +60,7 @@ void playerWeapon(gentity_t *ent);
 
 // misc
 void cmdMoan(gentity_t *ent);
+void freezeBotHelper();
+void freezeBotHook();
 void gibThink(gentity_t *self);
 bool gibCheck();
